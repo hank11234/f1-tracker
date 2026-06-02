@@ -429,7 +429,9 @@ button {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  /* auto-fit (not auto-fill) collapses empty tracks so the items stretch to
+     fill the full width of the bar instead of leaving a gap on the right. */
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 1px;
   background: var(--border);
   border: 1px solid var(--border);
@@ -439,16 +441,21 @@ button {
 
 .stat-item {
   background: var(--bg-card);
-  padding: 14px 16px;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  min-width: 0;
 }
 
 .stat-item .value {
   font-family: 'Barlow Condensed', sans-serif;
   font-weight: 700;
-  font-size: 22px;
+  font-size: 24px;
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stat-item .label {

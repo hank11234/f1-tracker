@@ -40,6 +40,18 @@ async def get_position(session_key: int) -> list:
     return await _get("/position", {"session_key": session_key})
 
 
+async def get_session_result(session_key: int) -> list:
+    """Official classification for a session: position, points, dnf/dns/dsq,
+    laps, gap_to_leader (and Q1/Q2/Q3 duration array for qualifying)."""
+    return await _get("/session_result", {"session_key": session_key})
+
+
+async def get_starting_grid(session_key: int) -> list:
+    """Starting grid for a race (driver_number -> position). Not always
+    available; callers should fall back to qualifying classification."""
+    return await _get("/starting_grid", {"session_key": session_key})
+
+
 async def get_intervals(session_key: int) -> list:
     return await _get("/intervals", {"session_key": session_key})
 

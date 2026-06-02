@@ -359,6 +359,9 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict):
                 await asyncio.sleep(1.5)
                 await sync_openf1_session_detail(db, existing, sk)
 
+    # Fill race grid/start positions now that qualifying results exist.
+    await _backfill_grid_positions(db)
+
     logger.info(f"OpenF1 sessions sync complete: {len(sessions)} sessions")
 
 
@@ -521,73 +524,154 @@ async def sync_openf1_session_detail(db: Session, session: models.Session, sessi
 
     db.commit()
 
-    # For Race/Sprint sessions with no results yet, derive finishing positions
-    # from the OpenF1 position stream.
-    if session.session_type in ("Race", "Sprint"):
+    # Populate classification (results) from OpenF1's session_result endpoint
+    # for races, sprints, and qualifying sessions that don't have results yet.
+    if session.session_type in ("Race", "Sprint", "Qualifying", "Sprint Qualifying"):
         existing_results = db.query(models.SessionResult).filter_by(session_id=session.id).count()
         if existing_results == 0 and driver_map:
-            await _sync_race_positions_from_openf1(db, session, session_key, driver_map)
+            await _sync_session_results_from_openf1(db, session, session_key, driver_map)
 
     logger.info(f"Session {session_key} detail sync complete")
 
 
-# Full points for a Grand Prix (top 10) and a Sprint (top 8)
+# Fallback points maps (used only if session_result omits points).
+# Note: the fastest-lap bonus point was abolished from 2025 onward.
 POINTS_MAP = {1: 25, 2: 18, 3: 15, 4: 12, 5: 10, 6: 8, 7: 6, 8: 4, 9: 2, 10: 1}
 SPRINT_POINTS_MAP = {1: 8, 2: 7, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2, 8: 1}
 
 
-async def _sync_race_positions_from_openf1(
+def _status_from_result(row: dict) -> str:
+    if row.get("dsq"):
+        return "DSQ"
+    if row.get("dns"):
+        return "DNS"
+    if row.get("dnf"):
+        return "DNF"
+    return "Finished"
+
+
+def _best_quali_time(duration) -> Optional[float]:
+    """Qualifying session_result.duration is [Q1, Q2, Q3] floats (some null).
+    Return the best (lowest) valid time, or a single float if that's given."""
+    if isinstance(duration, list):
+        vals = [d for d in duration if isinstance(d, (int, float)) and d > 0]
+        return float(min(vals)) if vals else None
+    if isinstance(duration, (int, float)) and duration > 0:
+        return float(duration)
+    return None
+
+
+async def _sync_session_results_from_openf1(
     db: Session, session: models.Session, session_key: int, driver_map: dict
 ):
-    """Derive finishing positions from OpenF1 position stream and store as SessionResult rows."""
-    position_data = await openf1.get_position(session_key)
-    if not position_data:
+    """Store SessionResult rows from OpenF1's official /session_result classification.
+
+    Handles races/sprints (position, points, laps, status, gap) and qualifying
+    sessions (position + best lap time). Grid positions for races are filled
+    afterwards by _backfill_grid_positions.
+    """
+    results = await openf1.get_session_result(session_key)
+    if not results:
         return
 
-    # Last recorded position per driver = finishing position
-    final_pos: dict[int, int] = {}
-    for entry in position_data:
-        num = entry.get("driver_number")
-        pos = entry.get("position")
-        if num and pos:
-            final_pos[num] = pos
-
-    if not final_pos:
-        return
-
+    is_quali = session.session_type in ("Qualifying", "Sprint Qualifying")
     is_sprint = session.session_type == "Sprint"
     points_map = SPRINT_POINTS_MAP if is_sprint else POINTS_MAP
 
-    # Fastest-lap bonus only applies to the main Grand Prix
-    fastest_driver_id = None
-    if not is_sprint:
-        best_lap = (
-            db.query(models.Lap)
-            .filter_by(session_id=session.id, is_deleted=False)
-            .filter(models.Lap.lap_time.isnot(None))
-            .order_by(models.Lap.lap_time)
-            .first()
-        )
-        fastest_driver_id = best_lap.driver_id if best_lap else None
-
-    for num, position in final_pos.items():
+    count = 0
+    for row in results:
+        num = row.get("driver_number")
+        position = row.get("position")
         driver = driver_map.get(num)
-        if not driver:
+        if not driver or position is None:
             continue
-        pts = float(points_map.get(position, 0))
-        if driver.id == fastest_driver_id and position <= 10:
-            pts += 1.0  # fastest-lap bonus point
-        db.add(models.SessionResult(
-            session_id=session.id,
-            driver_id=driver.id,
-            position=position,
-            points=pts,
-            status="Finished",
-        ))
+        if db.query(models.SessionResult).filter_by(
+            session_id=session.id, driver_id=driver.id
+        ).first():
+            continue
+
+        if is_quali:
+            db.add(models.SessionResult(
+                session_id=session.id,
+                driver_id=driver.id,
+                position=position,
+                best_lap_time=_best_quali_time(row.get("duration")),
+                points=0,
+            ))
+        else:
+            # Trust the official points; fall back to the map if absent.
+            pts = row.get("points")
+            if pts is None:
+                pts = points_map.get(position, 0)
+            gap = row.get("gap_to_leader")
+            if isinstance(gap, (int, float)):
+                gap_str = "LEADER" if gap == 0 else f"+{gap:.3f}"
+            else:
+                gap_str = None
+            db.add(models.SessionResult(
+                session_id=session.id,
+                driver_id=driver.id,
+                position=position,
+                points=float(pts or 0),
+                laps_completed=row.get("number_of_laps"),
+                status=_status_from_result(row),
+                gap_to_leader=gap_str,
+            ))
+        count += 1
 
     db.commit()
-    logger.info(f"Derived {len(final_pos)} positions from OpenF1 for session {session_key} "
-                f"({'sprint' if is_sprint else 'race'})")
+    logger.info(f"Stored {count} results from session_result for {session_key} "
+                f"({session.session_type})")
+
+
+async def _backfill_grid_positions(db: Session):
+    """Fill race grid (start) positions. Prefer OpenF1's /starting_grid; fall
+    back to the matching qualifying classification (grid order ignoring penalties)."""
+    number_to_driver = {
+        d.driver_number: d for d in db.query(models.Driver).all() if d.driver_number
+    }
+    races = db.query(models.Session).filter_by(
+        year=CURRENT_YEAR, session_type="Race"
+    ).all()
+
+    filled = 0
+    for race in races:
+        race_results = db.query(models.SessionResult).filter_by(session_id=race.id).all()
+        if not race_results or all(r.grid_position is not None for r in race_results):
+            continue
+
+        # grid map: driver_id -> grid position
+        grid: dict[int, int] = {}
+
+        # 1. Try OpenF1 starting_grid (only when we have a real OpenF1 key)
+        if race.session_key and race.session_key > 0:
+            for row in await openf1.get_starting_grid(race.session_key):
+                d = number_to_driver.get(row.get("driver_number"))
+                pos = row.get("position")
+                if d and pos:
+                    grid[d.id] = pos
+
+        # 2. Fall back to qualifying classification for the same round
+        if not grid:
+            quali = db.query(models.Session).filter_by(
+                year=CURRENT_YEAR, round_number=race.round_number, session_type="Qualifying"
+            ).first()
+            if quali:
+                for qr in db.query(models.SessionResult).filter_by(session_id=quali.id).all():
+                    if qr.position:
+                        grid[qr.driver_id] = qr.position
+
+        if not grid:
+            continue
+
+        for rr in race_results:
+            if rr.grid_position is None and rr.driver_id in grid:
+                rr.grid_position = grid[rr.driver_id]
+                filled += 1
+
+    db.commit()
+    if filled:
+        logger.info(f"Backfilled {filled} grid positions")
 
 
 # Master sync

@@ -102,6 +102,37 @@ export default function Home() {
     .sort((a, b) => new Date(a.date_start) - new Date(b.date_start))
     .slice(0, 3)
 
+  // ── Derived "at a glance" figures ─────────────────────────────
+  const totalRounds = new Set(
+    sessions.filter(s => s.session_type === 'Race').map(s => s.round)
+  ).size
+  const racesComplete = sessions.filter(
+    s => s.session_type === 'Race' && s.status === 'completed'
+  ).length
+  const nextRace = upcomingSessions[0]
+
+  const driverGap =
+    driverStandings.length >= 2
+      ? Math.round(driverStandings[0].points - driverStandings[1].points)
+      : null
+  const teamGap =
+    constructorStandings.length >= 2
+      ? Math.round(constructorStandings[0].points - constructorStandings[1].points)
+      : null
+
+  const stats = [
+    { value: driverStandings[0]?.driver?.abbreviation || '--', label: 'Championship Leader' },
+    { value: driverStandings[0]?.points ?? '--', label: 'Leader Points' },
+    { value: driverGap != null ? `+${driverGap}` : '--', label: 'Lead Over P2' },
+    { value: driverStandings[0]?.wins ?? '--', label: 'Leader Wins' },
+    { value: constructorStandings[0]?.team?.name?.split(' ')[0] || '--', label: 'Constructors Leader' },
+    { value: constructorStandings[0]?.points ?? '--', label: 'Constructor Points' },
+    { value: teamGap != null ? `+${teamGap}` : '--', label: 'Constructor Lead' },
+    { value: totalRounds ? `${racesComplete} / ${totalRounds}` : racesComplete, label: 'Rounds Run' },
+    { value: nextRace?.circuit?.location || nextRace?.circuit?.name || '--', label: 'Next Grand Prix' },
+    { value: status ? status.laps.toLocaleString() : '--', label: 'Laps Recorded' },
+  ]
+
   return (
     <div>
       <div className="page-header">
@@ -121,30 +152,12 @@ export default function Home() {
         <div style={{ marginBottom: 28 }}>
           <div className="section-label">Season at a glance</div>
           <div className="stat-grid">
-            <div className="stat-item">
-              <span className="value">{driverStandings[0]?.driver?.abbreviation || '--'}</span>
-              <span className="label">Championship Leader</span>
-            </div>
-            <div className="stat-item">
-              <span className="value">{driverStandings[0]?.points || '--'}</span>
-              <span className="label">Leader Points</span>
-            </div>
-            <div className="stat-item">
-              <span className="value">{constructorStandings[0]?.team?.name?.split(' ').pop() || '--'}</span>
-              <span className="label">Constructors Leader</span>
-            </div>
-            <div className="stat-item">
-              <span className="value">{constructorStandings[0]?.points || '--'}</span>
-              <span className="label">Constructor Points</span>
-            </div>
-            <div className="stat-item">
-              <span className="value">{sessions.filter(s => s.session_type === 'Race' && s.status === 'completed').length}</span>
-              <span className="label">Races Complete</span>
-            </div>
-            <div className="stat-item">
-              <span className="value">{driverStandings[0]?.wins || '--'}</span>
-              <span className="label">Leader Wins</span>
-            </div>
+            {stats.map((s, i) => (
+              <div className="stat-item" key={i}>
+                <span className="value">{s.value}</span>
+                <span className="label">{s.label}</span>
+              </div>
+            ))}
           </div>
         </div>
 
