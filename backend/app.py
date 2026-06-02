@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import models
@@ -166,31 +167,83 @@ def _log_sync(db: Session, sync_type: str, status: str, msg: str = ""):
 # Sync functions
 # ---------------------------------------------------------------------------
 
-async def sync_schedule_and_teams(db: Session):
-    """Sync race schedule, circuits, constructors from Jolpica."""
+async def sync_schedule_and_teams(db: Session) -> list:
+    """Sync race schedule, circuits, constructors from Jolpica.
+    Returns the schedule list so callers can build a meeting→round map."""
     logger.info("Syncing schedule and constructors...")
 
-    # Constructors
     constructors = await jolpica.get_constructors(CURRENT_YEAR)
     for c in constructors:
         get_or_create_team(db, c["constructorId"], c["name"], c.get("nationality", ""))
     db.commit()
 
-    # Schedule / circuits
     races = await jolpica.get_schedule(CURRENT_YEAR)
     for race in races:
         circuit_data = race.get("Circuit", {})
         loc = circuit_data.get("Location", {})
-        circuit = get_or_create_circuit(
+        get_or_create_circuit(
             db,
             circuit_data.get("circuitId", "unknown"),
             circuit_data.get("circuitName", "Unknown Circuit"),
             loc.get("locality", ""),
             loc.get("country", ""),
         )
-        db.commit()
-
+    db.commit()
     logger.info(f"Schedule sync complete: {len(races)} races")
+    return races
+
+
+def _build_meeting_round_map_from_openf1(of1_sessions: list) -> dict:
+    """Derive {meeting_key: round_number} purely from OpenF1 data.
+
+    OpenF1's meeting_key is an internal sequential ID (1000s), NOT the F1
+    round number. Jolpica (which would give official round numbers) is
+    unreliable/unavailable for the current season, so we derive rounds from
+    OpenF1 itself:
+
+      1. A meeting is a real Grand Prix round only if it contains a session
+         named "Race" (this excludes pre-season testing meetings whose only
+         sessions are named "Day 1/2/3").
+      2. Sort those race-weekend meetings by their earliest session date.
+      3. Assign round numbers 1, 2, 3 ... in chronological order.
+    """
+    # earliest date per meeting, and whether the meeting has a real Race
+    meeting_earliest: dict[int, datetime] = {}
+    meeting_has_race: dict[int, bool] = {}
+
+    for s in of1_sessions:
+        mk = s.get("meeting_key")
+        if not mk:
+            continue
+        sd = parse_dt(s.get("date_start"))
+        if sd:
+            if mk not in meeting_earliest or sd < meeting_earliest[mk]:
+                meeting_earliest[mk] = sd
+        if (s.get("session_name") or "").strip().lower() == "race":
+            meeting_has_race[mk] = True
+
+    race_meetings = [mk for mk in meeting_earliest if meeting_has_race.get(mk)]
+    race_meetings.sort(key=lambda mk: meeting_earliest[mk])
+
+    mapping = {mk: i for i, mk in enumerate(race_meetings, start=1)}
+    logger.info(f"Meeting→round map (from OpenF1): {len(mapping)} rounds")
+    return mapping
+
+
+def _normalize_session_type(session_type: str, session_name: str) -> str:
+    """Map OpenF1 (type, name) to a clean display type.
+
+    OpenF1 labels sprint races as type='Race' name='Sprint' and sprint
+    quali as type='Qualifying' name='Sprint Qualifying'. We split these out
+    so the main Race/Qualifying rows stay unique within a meeting and the
+    frontend filters work.
+    """
+    name = (session_name or "").strip()
+    if name == "Sprint":
+        return "Sprint"
+    if name == "Sprint Qualifying":
+        return "Sprint Qualifying"
+    return session_type or "Unknown"
 
 
 async def sync_jolpica_drivers(db: Session):
@@ -215,13 +268,22 @@ async def sync_jolpica_drivers(db: Session):
 
 
 def _compute_standings_from_results(db: Session):
-    """Fallback: derive standings from race SessionResult rows already in the DB."""
+    """Fallback: derive standings from race + sprint SessionResult rows in the DB.
+
+    Both the main Race and the Sprint award championship points, so we include
+    both. round_num is the count of completed main races (the championship round).
+    """
     race_sessions = (
         db.query(models.Session)
-        .filter_by(year=CURRENT_YEAR, session_type="Race", status="completed")
+        .filter(
+            models.Session.year == CURRENT_YEAR,
+            models.Session.status == "completed",
+            models.Session.session_type.in_(["Race", "Sprint"]),
+        )
         .all()
     )
-    round_num = len(race_sessions)
+    main_race_count = sum(1 for s in race_sessions if s.session_type == "Race")
+    round_num = main_race_count
     if round_num == 0:
         logger.info("No completed races found — standings not computed")
         return
@@ -251,7 +313,7 @@ def _compute_standings_from_results(db: Session):
                     team_pts[t_id]["wins"] += 1
 
     for pos, (d_id, data) in enumerate(
-        sorted(driver_pts.items(), key=lambda x: -x[1]["points"]), 1
+        sorted(driver_pts.items(), key=lambda x: (-x[1]["points"], -x[1]["wins"])), 1
     ):
         existing = db.query(models.DriverStanding).filter_by(
             year=CURRENT_YEAR, round_number=round_num, driver_id=d_id
@@ -268,7 +330,7 @@ def _compute_standings_from_results(db: Session):
             ))
 
     for pos, (t_id, data) in enumerate(
-        sorted(team_pts.items(), key=lambda x: -x[1]["points"]), 1
+        sorted(team_pts.items(), key=lambda x: (-x[1]["points"], -x[1]["wins"])), 1
     ):
         existing = db.query(models.TeamStanding).filter_by(
             year=CURRENT_YEAR, round_number=round_num, team_id=t_id
@@ -348,12 +410,40 @@ async def sync_standings(db: Session):
     logger.info("Standings sync complete")
 
 
+def _get_or_create_session(db: Session, year: int, round_num: int,
+                           session_type: str, fallback_key: int,
+                           circuit_id: Optional[int], name: str,
+                           date_start, status: str) -> models.Session:
+    """Find a session by (year, round, type) — the true unique key.
+    If none exists, create one. Never creates duplicates for the same race slot."""
+    session = db.query(models.Session).filter_by(
+        year=year, round_number=round_num, session_type=session_type
+    ).first()
+    if not session:
+        session = models.Session(
+            session_key=fallback_key,
+            year=year,
+            round_number=round_num,
+            circuit_id=circuit_id,
+            session_type=session_type,
+            session_name=name,
+            date_start=date_start,
+            status=status,
+        )
+        db.add(session)
+        db.flush()
+    return session
+
+
 async def sync_race_results(db: Session):
-    """Sync all race results and qualifying from Jolpica."""
+    """Sync all race + qualifying results from Jolpica.
+
+    Sessions are looked up by (year, round, type) — NOT by session_key — so
+    Jolpica and OpenF1 always write to the same row instead of creating duplicates.
+    """
     logger.info("Syncing race results...")
     races = await jolpica.get_race_results(CURRENT_YEAR)
     qual_races = await jolpica.get_qualifying_results(CURRENT_YEAR)
-
     qual_map = {int(r["round"]): r for r in qual_races}
 
     for race in races:
@@ -362,31 +452,21 @@ async def sync_race_results(db: Session):
             circuit_id=circuit_data.get("circuitId")
         ).first()
         round_num = int(race.get("round", 0))
-
-        # Ensure Race session
         race_date = parse_dt(race.get("date"))
-        race_session = db.query(models.Session).filter_by(
-            year=CURRENT_YEAR, round_number=round_num, session_type="Race"
-        ).first()
-        if not race_session:
-            race_session = models.Session(
-                session_key=CURRENT_YEAR * 1000 + round_num * 10 + 1,
-                year=CURRENT_YEAR,
-                round_number=round_num,
-                circuit_id=circuit.id if circuit else None,
-                session_type="Race",
-                session_name=race.get("raceName", "Race"),
-                date_start=race_date,
-                status="completed",
-            )
-            db.add(race_session)
-            db.flush()
 
-        # Race results
+        # Use (year, round, "Race") as the canonical key — shared with OpenF1 rows
+        race_session = _get_or_create_session(
+            db, CURRENT_YEAR, round_num, "Race",
+            fallback_key=-(CURRENT_YEAR * 1000 + round_num),  # negative = Jolpica-only placeholder
+            circuit_id=circuit.id if circuit else None,
+            name=race.get("raceName", "Race"),
+            date_start=race_date,
+            status="completed",
+        )
+
         for r in race.get("Results", []):
             driver_info = r.get("Driver", {})
             const_info = r.get("Constructor", {})
-
             team = get_or_create_team(db, const_info.get("constructorId", "unknown"),
                                       const_info.get("name", "Unknown"), "")
             driver = get_or_create_driver(
@@ -399,17 +479,16 @@ async def sync_race_results(db: Session):
                 driver_info.get("nationality", ""),
                 team,
             )
-
             fastest_time = None
             fastest = r.get("FastestLap", {})
             if fastest:
                 fastest_time = lap_str_to_seconds(fastest.get("Time", {}).get("time"))
 
+            pos_str = r.get("position", "0")
+            grid_str = r.get("grid", "0")
             existing = db.query(models.SessionResult).filter_by(
                 session_id=race_session.id, driver_id=driver.id
             ).first()
-            pos_str = r.get("position", "0")
-            grid_str = r.get("grid", "0")
             if existing:
                 existing.position = int(pos_str) if pos_str.isdigit() else None
                 existing.grid_position = int(grid_str) if grid_str.isdigit() else None
@@ -431,27 +510,16 @@ async def sync_race_results(db: Session):
                     best_lap_time=fastest_time,
                 ))
 
-        # Qualifying session
         if round_num in qual_map:
             qrace = qual_map[round_num]
-            qual_date = parse_dt(qrace.get("date"))
-            qual_session = db.query(models.Session).filter_by(
-                year=CURRENT_YEAR, round_number=round_num, session_type="Qualifying"
-            ).first()
-            if not qual_session:
-                qual_session = models.Session(
-                    session_key=CURRENT_YEAR * 1000 + round_num * 10 + 2,
-                    year=CURRENT_YEAR,
-                    round_number=round_num,
-                    circuit_id=circuit.id if circuit else None,
-                    session_type="Qualifying",
-                    session_name="Qualifying",
-                    date_start=qual_date,
-                    status="completed",
-                )
-                db.add(qual_session)
-                db.flush()
-
+            qual_session = _get_or_create_session(
+                db, CURRENT_YEAR, round_num, "Qualifying",
+                fallback_key=-(CURRENT_YEAR * 1000 + round_num + 5000),
+                circuit_id=circuit.id if circuit else None,
+                name="Qualifying",
+                date_start=parse_dt(qrace.get("date")),
+                status="completed",
+            )
             for r in qrace.get("QualifyingResults", []):
                 driver_info = r.get("Driver", {})
                 const_info = r.get("Constructor", {})
@@ -471,10 +539,9 @@ async def sync_race_results(db: Session):
                         lap_str_to_seconds(r.get("Q2")) or
                         lap_str_to_seconds(r.get("Q1")))
                 pos_str = r.get("position", "0")
-                existing = db.query(models.SessionResult).filter_by(
+                if not db.query(models.SessionResult).filter_by(
                     session_id=qual_session.id, driver_id=driver.id
-                ).first()
-                if not existing:
+                ).first():
                     db.add(models.SessionResult(
                         session_id=qual_session.id,
                         driver_id=driver.id,
@@ -488,8 +555,13 @@ async def sync_race_results(db: Session):
     logger.info(f"Race results sync complete: {len(races)} races")
 
 
-async def sync_openf1_sessions(db: Session):
-    """Sync sessions and lap data from OpenF1."""
+async def sync_openf1_sessions(db: Session, meeting_round_map: dict):
+    """Sync sessions and lap data from OpenF1.
+
+    meeting_round_map: {meeting_key: round_number} derived from OpenF1 dates.
+    Sessions are looked up by (year, round, type) so they share rows with any
+    sessions already created by sync_race_results — no duplicates.
+    """
     logger.info("Syncing OpenF1 sessions...")
     sessions = await openf1.get_sessions(CURRENT_YEAR)
 
@@ -498,54 +570,73 @@ async def sync_openf1_sessions(db: Session):
         if not sk:
             continue
 
-        existing = db.query(models.Session).filter_by(session_key=sk).first()
-        if not existing:
-            date_start = parse_dt(s.get("date_start"))
-            date_end = parse_dt(s.get("date_end"))
-            now = datetime.utcnow()
-            if date_end and date_end < now:
-                status = "completed"
-            elif date_start and date_start <= now:
-                status = "live"
-            else:
-                status = "upcoming"
+        meeting_key = s.get("meeting_key")
+        round_num = meeting_round_map.get(meeting_key, 0)
+        session_type = _normalize_session_type(
+            s.get("session_type", "Unknown"), s.get("session_name", "")
+        )
+        date_start = parse_dt(s.get("date_start"))
+        date_end = parse_dt(s.get("date_end"))
+        now = datetime.utcnow()
 
-            # Find or create circuit
-            loc = s.get("location", "Unknown")
-            country = s.get("country_name", "")
-            circuit_id = loc.lower().replace(" ", "_")
-            circuit = get_or_create_circuit(db, circuit_id, s.get("circuit_short_name", loc),
-                                            loc, country)
-            session_type = s.get("session_type", "Unknown")
-            round_num = s.get("meeting_key", 0)
-
-            new_session = models.Session(
-                session_key=sk,
-                openf1_key=sk,
-                year=CURRENT_YEAR,
-                round_number=round_num,
-                circuit_id=circuit.id,
-                session_type=session_type,
-                session_name=s.get("session_name", session_type),
-                date_start=date_start,
-                date_end=date_end,
-                status=status,
-            )
-            db.add(new_session)
-            db.flush()
-            existing = new_session
+        if date_end and date_end < now:
+            status = "completed"
+        elif date_start and date_start <= now:
+            status = "live"
         else:
-            date_end = parse_dt(s.get("date_end"))
-            now = datetime.utcnow()
-            if date_end and date_end < now:
-                existing.status = "completed"
-            elif existing.date_start and existing.date_start <= now:
-                existing.status = "live"
+            status = "upcoming"
+
+        # --- Look up by session_key first (fast path for already-synced rows) ---
+        existing = db.query(models.Session).filter_by(session_key=sk).first()
+
+        if existing:
+            # Heal round_number/type on re-sync (older runs stored meeting_key
+            # as the round). Only overwrite round when we have a valid mapping.
+            if round_num > 0:
+                existing.round_number = round_num
+            existing.session_type = session_type
+            existing.status = status
+        elif round_num > 0:
+            # Look up by canonical (year, round, type) — may exist from Jolpica sync
+            existing = db.query(models.Session).filter_by(
+                year=CURRENT_YEAR, round_number=round_num, session_type=session_type
+            ).first()
+            if existing:
+                # Adopt the real OpenF1 session_key so detail fetches work
+                existing.session_key = sk
+                existing.openf1_key = sk
+                existing.date_end = date_end
+                existing.status = status
+            else:
+                # Brand-new session — create with correct round number
+                loc = s.get("location", "Unknown")
+                country = s.get("country_name", "")
+                circuit_id = loc.lower().replace(" ", "_")
+                circuit = get_or_create_circuit(
+                    db, circuit_id, s.get("circuit_short_name", loc), loc, country
+                )
+                existing = models.Session(
+                    session_key=sk,
+                    openf1_key=sk,
+                    year=CURRENT_YEAR,
+                    round_number=round_num,
+                    circuit_id=circuit.id,
+                    session_type=session_type,
+                    session_name=s.get("session_name", session_type),
+                    date_start=date_start,
+                    date_end=date_end,
+                    status=status,
+                )
+                db.add(existing)
+                db.flush()
+        else:
+            # round_num unknown — skip to avoid polluting data with meeting_key rounds
+            logger.debug(f"Skipping session {sk}: meeting_key {meeting_key} not in round map")
+            continue
 
         db.commit()
 
-        # Fetch detailed data for completed sessions that don't have laps yet.
-        # Sleep briefly to avoid hitting OpenF1's rate limit (429).
+        # Fetch lap/stint/pit detail for completed sessions that don't have laps yet
         if existing.status == "completed":
             lap_count = db.query(models.Lap).filter_by(session_id=existing.id).count()
             if lap_count == 0:
@@ -714,9 +805,9 @@ async def sync_openf1_session_detail(db: Session, session: models.Session, sessi
 
     db.commit()
 
-    # For Race sessions with no results yet, derive finishing positions from
-    # OpenF1 position data (used when Jolpica doesn't have the race results yet).
-    if session.session_type == "Race":
+    # For Race/Sprint sessions with no results yet, derive finishing positions
+    # from OpenF1 position data (Jolpica race results are unavailable for 2026).
+    if session.session_type in ("Race", "Sprint"):
         existing_results = db.query(models.SessionResult).filter_by(session_id=session.id).count()
         if existing_results == 0 and driver_map:
             await _sync_race_positions_from_openf1(db, session, session_key, driver_map)
@@ -724,7 +815,9 @@ async def sync_openf1_session_detail(db: Session, session: models.Session, sessi
     logger.info(f"Session {session_key} detail sync complete")
 
 
+# Full points for a Grand Prix (top 10) and a Sprint (top 8)
 POINTS_MAP = {1: 25, 2: 18, 3: 15, 4: 12, 5: 10, 6: 8, 7: 6, 8: 4, 9: 2, 10: 1}
+SPRINT_POINTS_MAP = {1: 8, 2: 7, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2, 8: 1}
 
 
 async def _sync_race_positions_from_openf1(
@@ -746,24 +839,28 @@ async def _sync_race_positions_from_openf1(
     if not final_pos:
         return
 
-    # Fastest lap (lowest lap_time among non-deleted laps) for bonus point
-    best_lap = (
-        db.query(models.Lap)
-        .filter_by(session_id=session.id, is_deleted=False)
-        .filter(models.Lap.lap_time.isnot(None))
-        .order_by(models.Lap.lap_time)
-        .first()
-    )
-    fastest_driver_id = best_lap.driver_id if best_lap else None
+    is_sprint = session.session_type == "Sprint"
+    points_map = SPRINT_POINTS_MAP if is_sprint else POINTS_MAP
+
+    # Fastest-lap bonus only applies to the main Grand Prix
+    fastest_driver_id = None
+    if not is_sprint:
+        best_lap = (
+            db.query(models.Lap)
+            .filter_by(session_id=session.id, is_deleted=False)
+            .filter(models.Lap.lap_time.isnot(None))
+            .order_by(models.Lap.lap_time)
+            .first()
+        )
+        fastest_driver_id = best_lap.driver_id if best_lap else None
 
     for num, position in final_pos.items():
         driver = driver_map.get(num)
         if not driver:
             continue
-        pts = float(POINTS_MAP.get(position, 0))
-        # Fastest-lap bonus: +1 if in top 10 AND scored points
+        pts = float(points_map.get(position, 0))
         if driver.id == fastest_driver_id and position <= 10:
-            pts += 1.0
+            pts += 1.0  # fastest-lap bonus point
         db.add(models.SessionResult(
             session_id=session.id,
             driver_id=driver.id,
@@ -773,18 +870,38 @@ async def _sync_race_positions_from_openf1(
         ))
 
     db.commit()
-    logger.info(f"Derived {len(final_pos)} race positions from OpenF1 for session {session_key}")
+    logger.info(f"Derived {len(final_pos)} positions from OpenF1 for session {session_key} "
+                f"({'sprint' if is_sprint else 'race'})")
 
 
 # Master sync
+#
+# OpenF1 is the canonical data source. Jolpica (Ergast) is used only as an
+# optional, best-effort enrichment because it is unreliable / unavailable for
+# the current season — any Jolpica failure must NOT break the sync.
 async def sync_all():
     db = SessionLocal()
     try:
-        await sync_schedule_and_teams(db)
-        await sync_jolpica_drivers(db)
-        await sync_race_results(db)
-        await sync_openf1_sessions(db)
+        # 1. OpenF1 is the source of truth: build round numbers from OpenF1
+        #    meeting dates (NOT Jolpica), then sync all sessions + detail.
+        of1_sessions = await openf1.get_sessions(CURRENT_YEAR)
+        meeting_round_map = _build_meeting_round_map_from_openf1(of1_sessions)
+        await sync_openf1_sessions(db, meeting_round_map)
+
+        # 2. Best-effort Jolpica enrichment (schedule/teams/drivers/results).
+        #    Wrapped so a timeout or empty response never aborts the sync.
+        try:
+            await sync_schedule_and_teams(db)
+            await sync_jolpica_drivers(db)
+            await sync_race_results(db)
+        except Exception as e:
+            logger.warning(f"Jolpica enrichment skipped: {e}")
+            db.rollback()
+
+        # 3. Standings: Jolpica first if available, else compute from the
+        #    race results we stored (OpenF1-derived).
         await sync_standings(db)
+
         _log_sync(db, "full", "success")
         logger.info("Full sync complete")
     except Exception as e:
@@ -930,9 +1047,8 @@ async def trigger_sync(background_tasks: BackgroundTasks):
 @app.get("/api/standings/drivers")
 def driver_standings(db: Session = Depends(get_db)):
     latest_round = (
-        db.query(models.DriverStanding.round_number)
+        db.query(func.max(models.DriverStanding.round_number))
         .filter_by(year=CURRENT_YEAR)
-        .order_by(models.DriverStanding.round_number.desc())
         .scalar()
     )
     if latest_round is None:
@@ -958,9 +1074,8 @@ def driver_standings(db: Session = Depends(get_db)):
 @app.get("/api/standings/constructors")
 def constructor_standings(db: Session = Depends(get_db)):
     latest_round = (
-        db.query(models.TeamStanding.round_number)
+        db.query(func.max(models.TeamStanding.round_number))
         .filter_by(year=CURRENT_YEAR)
-        .order_by(models.TeamStanding.round_number.desc())
         .scalar()
     )
     if latest_round is None:
@@ -1063,6 +1178,10 @@ def list_teams(db: Session = Depends(get_db)):
     result = []
     for team in teams:
         drivers = db.query(models.Driver).filter_by(team_id=team.id).all()
+        # Skip orphan teams (e.g. duplicate constructor rows from Jolpica that
+        # never got drivers because OpenF1 used a different team name).
+        if not drivers:
+            continue
         result.append({
             **serialize_team(team),
             "drivers": [serialize_driver(d) for d in drivers],
@@ -1196,7 +1315,23 @@ def list_sessions(db: Session = Depends(get_db)):
         .order_by(models.Session.date_start.desc())
         .all()
     )
-    return [serialize_session(s) for s in sessions]
+    # Deduplicate by (year, round_number, session_type).
+    # Prefer rows with a positive session_key (real OpenF1 key) over negative
+    # Jolpica-only placeholders created before OpenF1 adopted the row.
+    by_key: dict = {}
+    for s in sessions:
+        key = (s.year, s.round_number, s.session_type)
+        if key not in by_key:
+            by_key[key] = s
+        elif (s.session_key or 0) > 0 > (by_key[key].session_key or 0):
+            by_key[key] = s  # replace placeholder with real key
+
+    result = sorted(
+        by_key.values(),
+        key=lambda s: s.date_start or datetime.min,
+        reverse=True,
+    )
+    return [serialize_session(s) for s in result]
 
 
 @app.get("/api/sessions/{session_key}")
