@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 import models
 from database import Base, engine, SessionLocal, get_db
-from fetchers import openf1, jolpica
+from fetchers import openf1
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -73,44 +73,6 @@ def _start_scheduler():
 # DB helpers
 # ---------------------------------------------------------------------------
 
-def get_or_create_team(db: Session, constructor_id: str, name: str, nationality: str = "") -> models.Team:
-    cid = constructor_id.lower().replace(" ", "_").replace("-", "_")
-    team = db.query(models.Team).filter_by(constructor_id=cid).first()
-    if not team:
-        team = models.Team(
-            constructor_id=cid,
-            name=name,
-            nationality=nationality,
-            color=TEAM_COLORS.get(cid, "#e8002d"),
-        )
-        db.add(team)
-        db.flush()
-    return team
-
-
-def get_or_create_driver(db: Session, driver_id: str, first: str, last: str,
-                          abbrev: str, number: int, nationality: str,
-                          team: models.Team = None) -> models.Driver:
-    did = driver_id.lower()
-    driver = db.query(models.Driver).filter_by(driver_id=did).first()
-    if not driver:
-        driver = models.Driver(
-            driver_id=did,
-            first_name=first,
-            last_name=last,
-            abbreviation=abbrev.upper(),
-            driver_number=number,
-            nationality=nationality,
-            team_id=team.id if team else None,
-        )
-        db.add(driver)
-        db.flush()
-    else:
-        if team and driver.team_id != team.id:
-            driver.team_id = team.id
-    return driver
-
-
 def get_or_create_circuit(db: Session, circuit_id: str, name: str,
                            location: str, country: str) -> models.Circuit:
     cid = circuit_id.lower()
@@ -167,39 +129,12 @@ def _log_sync(db: Session, sync_type: str, status: str, msg: str = ""):
 # Sync functions
 # ---------------------------------------------------------------------------
 
-async def sync_schedule_and_teams(db: Session) -> list:
-    """Sync race schedule, circuits, constructors from Jolpica.
-    Returns the schedule list so callers can build a meeting→round map."""
-    logger.info("Syncing schedule and constructors...")
-
-    constructors = await jolpica.get_constructors(CURRENT_YEAR)
-    for c in constructors:
-        get_or_create_team(db, c["constructorId"], c["name"], c.get("nationality", ""))
-    db.commit()
-
-    races = await jolpica.get_schedule(CURRENT_YEAR)
-    for race in races:
-        circuit_data = race.get("Circuit", {})
-        loc = circuit_data.get("Location", {})
-        get_or_create_circuit(
-            db,
-            circuit_data.get("circuitId", "unknown"),
-            circuit_data.get("circuitName", "Unknown Circuit"),
-            loc.get("locality", ""),
-            loc.get("country", ""),
-        )
-    db.commit()
-    logger.info(f"Schedule sync complete: {len(races)} races")
-    return races
-
-
 def _build_meeting_round_map_from_openf1(of1_sessions: list) -> dict:
     """Derive {meeting_key: round_number} purely from OpenF1 data.
 
     OpenF1's meeting_key is an internal sequential ID (1000s), NOT the F1
-    round number. Jolpica (which would give official round numbers) is
-    unreliable/unavailable for the current season, so we derive rounds from
-    OpenF1 itself:
+    round number, and OpenF1 does not expose the official round number, so we
+    derive rounds from OpenF1 itself:
 
       1. A meeting is a real Grand Prix round only if it contains a session
          named "Race" (this excludes pre-season testing meetings whose only
@@ -244,27 +179,6 @@ def _normalize_session_type(session_type: str, session_name: str) -> str:
     if name == "Sprint Qualifying":
         return "Sprint Qualifying"
     return session_type or "Unknown"
-
-
-async def sync_jolpica_drivers(db: Session):
-    """Sync driver list from Jolpica."""
-    logger.info("Syncing drivers from Jolpica...")
-    drivers = await jolpica.get_drivers(CURRENT_YEAR)
-    for d in drivers:
-        # We may not have team info here; team assigned from results sync
-        existing = db.query(models.Driver).filter_by(driver_id=d["driverId"]).first()
-        if not existing:
-            driver = models.Driver(
-                driver_id=d["driverId"],
-                first_name=d.get("givenName", ""),
-                last_name=d.get("familyName", ""),
-                abbreviation=d.get("code", d["driverId"][:3].upper()),
-                driver_number=int(d.get("permanentNumber", 0) or 0),
-                nationality=d.get("nationality", ""),
-            )
-            db.add(driver)
-    db.commit()
-    logger.info(f"Drivers sync complete: {len(drivers)} drivers")
 
 
 def _compute_standings_from_results(db: Session):
@@ -351,216 +265,18 @@ def _compute_standings_from_results(db: Session):
 
 
 async def sync_standings(db: Session):
-    """Sync standings: try Jolpica first, fall back to computing from stored results."""
+    """Compute driver + constructor standings from stored OpenF1 race results."""
     logger.info("Syncing standings...")
-
-    driver_standings = await jolpica.get_driver_standings(CURRENT_YEAR)
-    round_num = 0
-
-    if driver_standings:
-        races = await jolpica.get_race_results(CURRENT_YEAR)
-        round_num = len(races)
-
-        for s in driver_standings:
-            driver_info = s.get("Driver", {})
-            driver = db.query(models.Driver).filter_by(driver_id=driver_info.get("driverId")).first()
-            if not driver:
-                continue
-            existing = db.query(models.DriverStanding).filter_by(
-                year=CURRENT_YEAR, round_number=round_num, driver_id=driver.id
-            ).first()
-            if existing:
-                existing.position = int(s.get("position", 0))
-                existing.points = float(s.get("points", 0))
-                existing.wins = int(s.get("wins", 0))
-            else:
-                db.add(models.DriverStanding(
-                    year=CURRENT_YEAR, round_number=round_num, driver_id=driver.id,
-                    position=int(s.get("position", 0)),
-                    points=float(s.get("points", 0)),
-                    wins=int(s.get("wins", 0)),
-                ))
-
-        constructor_standings = await jolpica.get_constructor_standings(CURRENT_YEAR)
-        for s in constructor_standings:
-            const_info = s.get("Constructor", {})
-            team = db.query(models.Team).filter_by(constructor_id=const_info.get("constructorId")).first()
-            if not team:
-                continue
-            existing = db.query(models.TeamStanding).filter_by(
-                year=CURRENT_YEAR, round_number=round_num, team_id=team.id
-            ).first()
-            if existing:
-                existing.position = int(s.get("position", 0))
-                existing.points = float(s.get("points", 0))
-                existing.wins = int(s.get("wins", 0))
-            else:
-                db.add(models.TeamStanding(
-                    year=CURRENT_YEAR, round_number=round_num, team_id=team.id,
-                    position=int(s.get("position", 0)),
-                    points=float(s.get("points", 0)),
-                    wins=int(s.get("wins", 0)),
-                ))
-        db.commit()
-        logger.info("Standings synced from Jolpica")
-    else:
-        logger.info("Jolpica returned no standings — computing from stored results")
-        _compute_standings_from_results(db)
-
+    _compute_standings_from_results(db)
     logger.info("Standings sync complete")
-
-
-def _get_or_create_session(db: Session, year: int, round_num: int,
-                           session_type: str, fallback_key: int,
-                           circuit_id: Optional[int], name: str,
-                           date_start, status: str) -> models.Session:
-    """Find a session by (year, round, type) — the true unique key.
-    If none exists, create one. Never creates duplicates for the same race slot."""
-    session = db.query(models.Session).filter_by(
-        year=year, round_number=round_num, session_type=session_type
-    ).first()
-    if not session:
-        session = models.Session(
-            session_key=fallback_key,
-            year=year,
-            round_number=round_num,
-            circuit_id=circuit_id,
-            session_type=session_type,
-            session_name=name,
-            date_start=date_start,
-            status=status,
-        )
-        db.add(session)
-        db.flush()
-    return session
-
-
-async def sync_race_results(db: Session):
-    """Sync all race + qualifying results from Jolpica.
-
-    Sessions are looked up by (year, round, type) — NOT by session_key — so
-    Jolpica and OpenF1 always write to the same row instead of creating duplicates.
-    """
-    logger.info("Syncing race results...")
-    races = await jolpica.get_race_results(CURRENT_YEAR)
-    qual_races = await jolpica.get_qualifying_results(CURRENT_YEAR)
-    qual_map = {int(r["round"]): r for r in qual_races}
-
-    for race in races:
-        circuit_data = race.get("Circuit", {})
-        circuit = db.query(models.Circuit).filter_by(
-            circuit_id=circuit_data.get("circuitId")
-        ).first()
-        round_num = int(race.get("round", 0))
-        race_date = parse_dt(race.get("date"))
-
-        # Use (year, round, "Race") as the canonical key — shared with OpenF1 rows
-        race_session = _get_or_create_session(
-            db, CURRENT_YEAR, round_num, "Race",
-            fallback_key=-(CURRENT_YEAR * 1000 + round_num),  # negative = Jolpica-only placeholder
-            circuit_id=circuit.id if circuit else None,
-            name=race.get("raceName", "Race"),
-            date_start=race_date,
-            status="completed",
-        )
-
-        for r in race.get("Results", []):
-            driver_info = r.get("Driver", {})
-            const_info = r.get("Constructor", {})
-            team = get_or_create_team(db, const_info.get("constructorId", "unknown"),
-                                      const_info.get("name", "Unknown"), "")
-            driver = get_or_create_driver(
-                db,
-                driver_info.get("driverId", "unknown"),
-                driver_info.get("givenName", ""),
-                driver_info.get("familyName", ""),
-                driver_info.get("code", "UNK"),
-                int(driver_info.get("permanentNumber", 0) or 0),
-                driver_info.get("nationality", ""),
-                team,
-            )
-            fastest_time = None
-            fastest = r.get("FastestLap", {})
-            if fastest:
-                fastest_time = lap_str_to_seconds(fastest.get("Time", {}).get("time"))
-
-            pos_str = r.get("position", "0")
-            grid_str = r.get("grid", "0")
-            existing = db.query(models.SessionResult).filter_by(
-                session_id=race_session.id, driver_id=driver.id
-            ).first()
-            if existing:
-                existing.position = int(pos_str) if pos_str.isdigit() else None
-                existing.grid_position = int(grid_str) if grid_str.isdigit() else None
-                existing.points = float(r.get("points", 0))
-                existing.laps_completed = int(r.get("laps", 0))
-                existing.status = r.get("status", "")
-                existing.gap_to_leader = r.get("Time", {}).get("time") or r.get("status", "")
-                existing.best_lap_time = fastest_time
-            else:
-                db.add(models.SessionResult(
-                    session_id=race_session.id,
-                    driver_id=driver.id,
-                    position=int(pos_str) if pos_str.isdigit() else None,
-                    grid_position=int(grid_str) if grid_str.isdigit() else None,
-                    points=float(r.get("points", 0)),
-                    laps_completed=int(r.get("laps", 0)),
-                    status=r.get("status", ""),
-                    gap_to_leader=r.get("Time", {}).get("time") or r.get("status", ""),
-                    best_lap_time=fastest_time,
-                ))
-
-        if round_num in qual_map:
-            qrace = qual_map[round_num]
-            qual_session = _get_or_create_session(
-                db, CURRENT_YEAR, round_num, "Qualifying",
-                fallback_key=-(CURRENT_YEAR * 1000 + round_num + 5000),
-                circuit_id=circuit.id if circuit else None,
-                name="Qualifying",
-                date_start=parse_dt(qrace.get("date")),
-                status="completed",
-            )
-            for r in qrace.get("QualifyingResults", []):
-                driver_info = r.get("Driver", {})
-                const_info = r.get("Constructor", {})
-                team = get_or_create_team(db, const_info.get("constructorId", "unknown"),
-                                          const_info.get("name", "Unknown"), "")
-                driver = get_or_create_driver(
-                    db,
-                    driver_info.get("driverId", "unknown"),
-                    driver_info.get("givenName", ""),
-                    driver_info.get("familyName", ""),
-                    driver_info.get("code", "UNK"),
-                    int(driver_info.get("permanentNumber", 0) or 0),
-                    driver_info.get("nationality", ""),
-                    team,
-                )
-                best = (lap_str_to_seconds(r.get("Q3")) or
-                        lap_str_to_seconds(r.get("Q2")) or
-                        lap_str_to_seconds(r.get("Q1")))
-                pos_str = r.get("position", "0")
-                if not db.query(models.SessionResult).filter_by(
-                    session_id=qual_session.id, driver_id=driver.id
-                ).first():
-                    db.add(models.SessionResult(
-                        session_id=qual_session.id,
-                        driver_id=driver.id,
-                        position=int(pos_str) if pos_str.isdigit() else None,
-                        best_lap_time=best,
-                        points=0,
-                    ))
-
-        db.commit()
-
-    logger.info(f"Race results sync complete: {len(races)} races")
 
 
 async def sync_openf1_sessions(db: Session, meeting_round_map: dict):
     """Sync sessions and lap data from OpenF1.
 
     meeting_round_map: {meeting_key: round_number} derived from OpenF1 dates.
-    Sessions are looked up by (year, round, type) so they share rows with any
-    sessions already created by sync_race_results — no duplicates.
+    Sessions are keyed by (year, round, type) so re-syncs update the same row
+    instead of creating duplicates.
     """
     logger.info("Syncing OpenF1 sessions...")
     sessions = await openf1.get_sessions(CURRENT_YEAR)
@@ -597,7 +313,7 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict):
             existing.session_type = session_type
             existing.status = status
         elif round_num > 0:
-            # Look up by canonical (year, round, type) — may exist from Jolpica sync
+            # Look up by canonical (year, round, type) to catch any legacy row
             existing = db.query(models.Session).filter_by(
                 year=CURRENT_YEAR, round_number=round_num, session_type=session_type
             ).first()
@@ -806,7 +522,7 @@ async def sync_openf1_session_detail(db: Session, session: models.Session, sessi
     db.commit()
 
     # For Race/Sprint sessions with no results yet, derive finishing positions
-    # from OpenF1 position data (Jolpica race results are unavailable for 2026).
+    # from the OpenF1 position stream.
     if session.session_type in ("Race", "Sprint"):
         existing_results = db.query(models.SessionResult).filter_by(session_id=session.id).count()
         if existing_results == 0 and driver_map:
@@ -875,31 +591,19 @@ async def _sync_race_positions_from_openf1(
 
 
 # Master sync
-#
-# OpenF1 is the canonical data source. Jolpica (Ergast) is used only as an
-# optional, best-effort enrichment because it is unreliable / unavailable for
-# the current season — any Jolpica failure must NOT break the sync.
+# OpenF1 is the sole data source. Round numbers, sessions, drivers, teams,
+# laps, pit stops, stints, finishing positions, and standings are all derived
+# from OpenF1.
 async def sync_all():
     db = SessionLocal()
     try:
-        # 1. OpenF1 is the source of truth: build round numbers from OpenF1
-        #    meeting dates (NOT Jolpica), then sync all sessions + detail.
+        # 1. Build round numbers from OpenF1 meeting dates, then sync every
+        #    session plus its lap/pit/stint/position detail.
         of1_sessions = await openf1.get_sessions(CURRENT_YEAR)
         meeting_round_map = _build_meeting_round_map_from_openf1(of1_sessions)
         await sync_openf1_sessions(db, meeting_round_map)
 
-        # 2. Best-effort Jolpica enrichment (schedule/teams/drivers/results).
-        #    Wrapped so a timeout or empty response never aborts the sync.
-        try:
-            await sync_schedule_and_teams(db)
-            await sync_jolpica_drivers(db)
-            await sync_race_results(db)
-        except Exception as e:
-            logger.warning(f"Jolpica enrichment skipped: {e}")
-            db.rollback()
-
-        # 3. Standings: Jolpica first if available, else compute from the
-        #    race results we stored (OpenF1-derived).
+        # 2. Compute championship standings from the stored race/sprint results.
         await sync_standings(db)
 
         _log_sync(db, "full", "success")
@@ -1178,8 +882,7 @@ def list_teams(db: Session = Depends(get_db)):
     result = []
     for team in teams:
         drivers = db.query(models.Driver).filter_by(team_id=team.id).all()
-        # Skip orphan teams (e.g. duplicate constructor rows from Jolpica that
-        # never got drivers because OpenF1 used a different team name).
+        # Skip any team row that has no drivers assigned.
         if not drivers:
             continue
         result.append({
@@ -1315,16 +1018,15 @@ def list_sessions(db: Session = Depends(get_db)):
         .order_by(models.Session.date_start.desc())
         .all()
     )
-    # Deduplicate by (year, round_number, session_type).
-    # Prefer rows with a positive session_key (real OpenF1 key) over negative
-    # Jolpica-only placeholders created before OpenF1 adopted the row.
+    # Deduplicate by (year, round_number, session_type) as a safety net for any
+    # legacy duplicate rows; prefer rows with a real (positive) OpenF1 key.
     by_key: dict = {}
     for s in sessions:
         key = (s.year, s.round_number, s.session_type)
         if key not in by_key:
             by_key[key] = s
         elif (s.session_key or 0) > 0 > (by_key[key].session_key or 0):
-            by_key[key] = s  # replace placeholder with real key
+            by_key[key] = s  # replace legacy placeholder with real key
 
     result = sorted(
         by_key.values(),
