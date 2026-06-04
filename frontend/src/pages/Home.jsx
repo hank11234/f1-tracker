@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import Loading from '../components/Loading.jsx'
 import DriverChip from '../components/DriverChip.jsx'
 import PosBadge from '../components/PosBadge.jsx'
+import Flag from '../components/Flag.jsx'
 import { formatDate } from '../utils.js'
 
 function StandingsMini({ title, items, renderRow, linkBase }) {
@@ -45,6 +46,7 @@ export default function Home() {
   const [status, setStatus] = useState(null)
   const [loading, setLoading] = useState(true)
   const [backendError, setBackendError] = useState(false)
+  const navigate = useNavigate()
 
   useEffect(() => {
     // Each call fails independently so a single error doesn't blank everything
@@ -168,7 +170,11 @@ export default function Home() {
             items={driverStandings}
             linkBase="/drivers"
             renderRow={(item) => (
-              <tr key={item.driver?.driver_id}>
+              <tr
+                key={item.driver?.driver_id}
+                onClick={() => item.driver && navigate(`/drivers/${item.driver.driver_id}`)}
+                style={{ cursor: 'pointer' }}
+              >
                 <td style={{ width: 44 }}>
                   <PosBadge pos={item.position} />
                 </td>
@@ -191,7 +197,11 @@ export default function Home() {
             items={constructorStandings}
             linkBase="/teams"
             renderRow={(item) => (
-              <tr key={item.team?.constructor_id}>
+              <tr
+                key={item.team?.constructor_id}
+                onClick={() => item.team && navigate(`/teams/${item.team.constructor_id}`)}
+                style={{ cursor: 'pointer' }}
+              >
                 <td style={{ width: 44 }}>
                   <PosBadge pos={item.position} />
                 </td>
@@ -200,6 +210,7 @@ export default function Home() {
                     <span className="driver-color-bar" style={{ background: item.team?.color || '#e8002d' }} />
                     <span>
                       <span className="driver-abbrev">{item.team?.name}</span>
+                      <div className="driver-team-name">{item.team?.nationality || ''}</div>
                     </span>
                   </span>
                 </td>
@@ -236,13 +247,18 @@ export default function Home() {
                   onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-card-hover)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'var(--bg-card)'}
                 >
-                  <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span className="font-cond font-bold" style={{ fontSize: 15 }}>
-                      {s.circuit?.name || s.session_name}
+                      {s.race_name || s.circuit?.name || s.session_name}
                     </span>
-                    <span style={{ marginLeft: 12, color: 'var(--text-muted)', fontSize: 12 }}>
-                      {s.session_type}
-                    </span>
+                    {s.circuit?.location && (
+                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                        {s.circuit.location}
+                      </span>
+                    )}
+                    {s.circuit?.flag && (
+                      <Flag code={s.circuit.flag} title={s.circuit.country} size={20} />
+                    )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                     <span className="text-secondary" style={{ fontSize: 12 }}>
@@ -274,13 +290,18 @@ export default function Home() {
                     justifyContent: 'space-between',
                   }}
                 >
-                  <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span className="font-cond font-bold" style={{ fontSize: 15 }}>
-                      {s.circuit?.name || s.session_name}
+                      {s.race_name || s.circuit?.name || s.session_name}
                     </span>
-                    <span style={{ marginLeft: 12, color: 'var(--text-muted)', fontSize: 12 }}>
-                      {s.session_type}
-                    </span>
+                    {s.circuit?.location && (
+                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                        {s.circuit.location}
+                      </span>
+                    )}
+                    {s.circuit?.flag && (
+                      <Flag code={s.circuit.flag} title={s.circuit.country} size={20} />
+                    )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                     <span className="text-secondary" style={{ fontSize: 12 }}>

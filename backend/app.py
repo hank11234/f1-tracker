@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -60,6 +61,18 @@ TEAM_NATIONALITY = {
     "cadillac": "American",
 }
 
+# Country name -> ISO 3166-1 alpha-2 code, for circuit/race flags.
+COUNTRY_CODE = {
+    "Australia": "au", "Austria": "at", "Azerbaijan": "az", "Bahrain": "bh",
+    "Belgium": "be", "Brazil": "br", "Canada": "ca", "China": "cn",
+    "Hungary": "hu", "Italy": "it", "Japan": "jp", "Mexico": "mx",
+    "Monaco": "mc", "Netherlands": "nl", "Qatar": "qa", "Saudi Arabia": "sa",
+    "Singapore": "sg", "Spain": "es", "United Arab Emirates": "ae",
+    "United Kingdom": "gb", "Great Britain": "gb", "United States": "us",
+    "USA": "us", "France": "fr", "Germany": "de", "Portugal": "pt",
+    "Russia": "ru", "Turkey": "tr",
+}
+
 # Display the country name rather than the demonym (e.g. "United Kingdom"
 # instead of "British"). The demonym is still used for the flag-code lookup.
 NATIONALITY_TO_COUNTRY = {
@@ -89,9 +102,21 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     Base.metadata.create_all(bind=engine)
+    _run_migrations()
     logger.info("Database initialized")
     asyncio.create_task(initial_sync())
     _start_scheduler()
+
+
+def _run_migrations():
+    """Add columns introduced after a DB was first created (SQLite create_all
+    does not ALTER existing tables)."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(sessions)"))]
+        if "race_name" not in cols:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN race_name VARCHAR"))
+            logger.info("Migration: added sessions.race_name")
 
 
 def _start_scheduler():
@@ -215,6 +240,28 @@ def _normalize_session_type(session_type: str, session_name: str) -> str:
     return session_type or "Unknown"
 
 
+def clean_race_name(official: str) -> str:
+    """Turn an OpenF1 meeting_official_name into a display race name:
+    'FORMULA 1 LENOVO GRAND PRIX DU CANADA 2026' -> 'Lenovo Grand Prix Du Canada'."""
+    if not official:
+        return ""
+    s = official.strip()
+    s = re.sub(r"^FORMULA\s+1\s+", "", s, flags=re.IGNORECASE)  # drop "FORMULA 1 "
+    s = re.sub(r"\s+\d{4}$", "", s)                              # drop trailing year
+    return s.title().strip()
+
+
+async def _build_meeting_name_map() -> dict:
+    """{meeting_key: cleaned official race name} from OpenF1 /meetings."""
+    meetings = await openf1.get_meetings(CURRENT_YEAR)
+    out = {}
+    for m in meetings:
+        mk = m.get("meeting_key")
+        if mk:
+            out[mk] = clean_race_name(m.get("meeting_official_name", "")) or m.get("meeting_name", "")
+    return out
+
+
 def _compute_standings_from_results(db: Session):
     """Fallback: derive standings from race + sprint SessionResult rows in the DB.
 
@@ -305,15 +352,18 @@ async def sync_standings(db: Session):
     logger.info("Standings sync complete")
 
 
-async def sync_openf1_sessions(db: Session, meeting_round_map: dict):
+async def sync_openf1_sessions(db: Session, meeting_round_map: dict,
+                               meeting_name_map: dict = None):
     """Sync sessions and lap data from OpenF1.
 
     meeting_round_map: {meeting_key: round_number} derived from OpenF1 dates.
+    meeting_name_map: {meeting_key: official race name} from OpenF1 /meetings.
     Sessions are keyed by (year, round, type) so re-syncs update the same row
     instead of creating duplicates.
     """
     logger.info("Syncing OpenF1 sessions...")
     sessions = await openf1.get_sessions(CURRENT_YEAR)
+    meeting_name_map = meeting_name_map or {}
 
     for s in sessions:
         sk = s.get("session_key")
@@ -322,6 +372,7 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict):
 
         meeting_key = s.get("meeting_key")
         round_num = meeting_round_map.get(meeting_key, 0)
+        race_name = meeting_name_map.get(meeting_key, "")
         session_type = _normalize_session_type(
             s.get("session_type", "Unknown"), s.get("session_name", "")
         )
@@ -346,6 +397,8 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict):
                 existing.round_number = round_num
             existing.session_type = session_type
             existing.status = status
+            if race_name:
+                existing.race_name = race_name
         elif round_num > 0:
             # Look up by canonical (year, round, type) to catch any legacy row
             existing = db.query(models.Session).filter_by(
@@ -357,6 +410,8 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict):
                 existing.openf1_key = sk
                 existing.date_end = date_end
                 existing.status = status
+                if race_name:
+                    existing.race_name = race_name
             else:
                 # Brand-new session — create with correct round number
                 loc = s.get("location", "Unknown")
@@ -373,6 +428,7 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict):
                     circuit_id=circuit.id,
                     session_type=session_type,
                     session_name=s.get("session_name", session_type),
+                    race_name=race_name or None,
                     date_start=date_start,
                     date_end=date_end,
                     status=status,
@@ -719,7 +775,8 @@ async def sync_all():
         #    session plus its lap/pit/stint/position detail.
         of1_sessions = await openf1.get_sessions(CURRENT_YEAR)
         meeting_round_map = _build_meeting_round_map_from_openf1(of1_sessions)
-        await sync_openf1_sessions(db, meeting_round_map)
+        meeting_name_map = await _build_meeting_name_map()
+        await sync_openf1_sessions(db, meeting_round_map, meeting_name_map)
 
         # 2. Compute championship standings from the stored race/sprint results.
         await sync_standings(db)
@@ -832,6 +889,7 @@ def serialize_session(s: models.Session) -> dict:
         "round": s.round_number,
         "session_type": s.session_type,
         "session_name": s.session_name,
+        "race_name": s.race_name,
         "date_start": s.date_start.isoformat() if s.date_start else None,
         "date_end": s.date_end.isoformat() if s.date_end else None,
         "status": s.status,
@@ -841,6 +899,7 @@ def serialize_session(s: models.Session) -> dict:
             "name": circuit.name,
             "location": circuit.location,
             "country": circuit.country,
+            "flag": COUNTRY_CODE.get(circuit.country, ""),
         } if circuit else None,
     }
 

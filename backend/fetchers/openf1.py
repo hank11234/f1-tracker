@@ -20,6 +20,11 @@ async def get_sessions(year: int = 2025) -> list:
     return await _get("/sessions", {"year": year})
 
 
+async def get_meetings(year: int = 2025) -> list:
+    """Race weekends with meeting_name and meeting_official_name."""
+    return await _get("/meetings", {"year": year})
+
+
 async def get_drivers(session_key: int) -> list:
     return await _get("/drivers", {"session_key": session_key})
 

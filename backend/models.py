@@ -57,6 +57,7 @@ class Session(Base):
     circuit_id = Column(Integer, ForeignKey("circuits.id"), nullable=True)
     session_type = Column(String)
     session_name = Column(String)
+    race_name = Column(String, nullable=True)  # official GP name, e.g. "Lenovo Grand Prix Du Canada"
     date_start = Column(DateTime, nullable=True)
     date_end = Column(DateTime, nullable=True)
     status = Column(String, default="upcoming")
