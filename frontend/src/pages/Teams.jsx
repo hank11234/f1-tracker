@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../api.js'
 import Loading from '../components/Loading.jsx'
 import PosBadge from '../components/PosBadge.jsx'
+import Flag from '../components/Flag.jsx'
 
 export default function Teams() {
   const [standings, setStandings] = useState([])
@@ -55,8 +56,8 @@ export default function Teams() {
                   <th>Pos</th>
                   <th>Team</th>
                   <th>Nationality</th>
-                  {hasStandings && <th className="text-right">Points</th>}
-                  {hasStandings && <th className="text-right">Wins</th>}
+                  {hasStandings && <th className="text-center">Points</th>}
+                  {hasStandings && <th className="text-center">Wins</th>}
                   {hasStandings && <th style={{ width: 140 }}></th>}
                 </tr>
               </thead>
@@ -76,13 +77,13 @@ export default function Teams() {
                           <span className="font-cond font-bold" style={{ fontSize: 16 }}>{t.name}</span>
                         </Link>
                       </td>
-                      <td className="text-muted" style={{ fontSize: 13 }}>{t.nationality || '--'}</td>
+                      <td><Flag code={t.flag} title={t.nationality} /></td>
                       {hasStandings && (
-                        <td className="text-right">
+                        <td className="text-center">
                           <span className="font-cond font-bold" style={{ fontSize: 20 }}>{item.points}</span>
                         </td>
                       )}
-                      {hasStandings && <td className="text-right text-secondary">{item.wins}</td>}
+                      {hasStandings && <td className="text-center text-secondary">{item.wins}</td>}
                       {hasStandings && (
                         <td>
                           <div className="gap-bar-wrap" style={{ width: '100%' }}>

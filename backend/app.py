@@ -38,6 +38,40 @@ NATIONALITY_FLAGS = {
     "Danish": "dk", "Argentine": "ar", "New Zealander": "nz", "Austrian": "at",
 }
 
+# OpenF1 does not expose driver nationality, so we map it by abbreviation for
+# the 2026 grid (verified against current F1 entry lists / driver profiles).
+DRIVER_NATIONALITY = {
+    "NOR": "British", "VER": "Dutch", "BOR": "Brazilian", "HAD": "French",
+    "GAS": "French", "PER": "Mexican", "ANT": "Italian", "ALO": "Spanish",
+    "LEC": "Monegasque", "STR": "Canadian", "ALB": "Thai", "HUL": "German",
+    "LAW": "New Zealander", "OCO": "French", "CRA": "American", "LIN": "British",
+    "COL": "Argentine", "HAM": "British", "SAI": "Spanish", "RUS": "British",
+    "BOT": "Finnish", "PIA": "Australian", "BEA": "British",
+}
+
+# Constructor (entrant) nationality keyed by the OpenF1-derived constructor_id.
+TEAM_NATIONALITY = {
+    "mclaren": "British", "ferrari": "Italian", "mercedes": "German",
+    "red_bull_racing": "Austrian", "red_bull": "Austrian",
+    "aston_martin": "British", "alpine": "French",
+    "haas_f1_team": "American", "haas": "American",
+    "racing_bulls": "Italian", "rb": "Italian",
+    "williams": "British", "audi": "German", "sauber": "Swiss",
+    "cadillac": "American",
+}
+
+# Display the country name rather than the demonym (e.g. "United Kingdom"
+# instead of "British"). The demonym is still used for the flag-code lookup.
+NATIONALITY_TO_COUNTRY = {
+    "British": "United Kingdom", "Dutch": "Netherlands", "Spanish": "Spain",
+    "German": "Germany", "Mexican": "Mexico", "Monegasque": "Monaco",
+    "Australian": "Australia", "Canadian": "Canada", "French": "France",
+    "Finnish": "Finland", "Thai": "Thailand", "Chinese": "China",
+    "American": "United States", "Brazilian": "Brazil", "Italian": "Italy",
+    "Japanese": "Japan", "Danish": "Denmark", "Argentine": "Argentina",
+    "New Zealander": "New Zealand", "Austrian": "Austria", "Swiss": "Switzerland",
+}
+
 app = FastAPI(title="F1 Tracker API", version="1.0.0")
 
 app.add_middleware(
@@ -714,6 +748,9 @@ async def initial_sync():
 
 def serialize_driver(d: models.Driver) -> dict:
     team = d.team
+    # Fall back to the curated map when the stored nationality is blank
+    # (OpenF1 doesn't provide it). Display the country name, not the demonym.
+    demonym = d.nationality or DRIVER_NATIONALITY.get(d.abbreviation, "")
     return {
         "id": d.id,
         "driver_id": d.driver_id,
@@ -722,8 +759,8 @@ def serialize_driver(d: models.Driver) -> dict:
         "last_name": d.last_name,
         "abbreviation": d.abbreviation,
         "number": d.driver_number,
-        "nationality": d.nationality,
-        "flag": NATIONALITY_FLAGS.get(d.nationality, ""),
+        "nationality": NATIONALITY_TO_COUNTRY.get(demonym, demonym),
+        "flag": NATIONALITY_FLAGS.get(demonym, ""),
         "team": {
             "id": team.id if team else None,
             "name": team.name if team else "Unknown",
@@ -734,11 +771,13 @@ def serialize_driver(d: models.Driver) -> dict:
 
 
 def serialize_team(t: models.Team) -> dict:
+    demonym = t.nationality or TEAM_NATIONALITY.get(t.constructor_id, "")
     return {
         "id": t.id,
         "constructor_id": t.constructor_id,
         "name": t.name,
-        "nationality": t.nationality,
+        "nationality": NATIONALITY_TO_COUNTRY.get(demonym, demonym),
+        "flag": NATIONALITY_FLAGS.get(demonym, ""),
         "color": t.color,
     }
 

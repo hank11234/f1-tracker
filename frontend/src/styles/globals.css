@@ -294,6 +294,14 @@ button {
 
 .f1-table thead th:first-child { border-radius: 0; }
 
+/* Let the text-align utilities win over the default left-aligned header/cell
+   (higher specificity than `.f1-table thead th` / `.f1-table tbody td`) so a
+   centered/right-aligned column lines its header up with its values. */
+.f1-table thead th.text-center,
+.f1-table tbody td.text-center { text-align: center; }
+.f1-table thead th.text-right,
+.f1-table tbody td.text-right { text-align: right; }
+
 .f1-table tbody tr {
   border-bottom: 1px solid var(--border);
   transition: background 0.1s;

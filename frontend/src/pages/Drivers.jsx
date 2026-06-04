@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../api.js'
 import Loading from '../components/Loading.jsx'
 import PosBadge from '../components/PosBadge.jsx'
+import Flag from '../components/Flag.jsx'
 
 export default function Drivers() {
   const [standings, setStandings] = useState([])
@@ -62,8 +63,8 @@ export default function Drivers() {
                   <th>Driver</th>
                   <th>Team</th>
                   <th>Nat</th>
-                  {hasStandings && <th className="text-right">Points</th>}
-                  {hasStandings && <th className="text-right">Wins</th>}
+                  {hasStandings && <th className="text-center">Points</th>}
+                  {hasStandings && <th className="text-center">Wins</th>}
                   {hasStandings && <th style={{ width: 120 }}></th>}
                 </tr>
               </thead>
@@ -95,14 +96,14 @@ export default function Drivers() {
                           {d.team?.name || '--'}
                         </Link>
                       </td>
-                      <td className="text-muted" style={{ fontSize: 12 }}>{d.nationality || '--'}</td>
+                      <td><Flag code={d.flag} title={d.nationality} /></td>
                       {hasStandings && (
-                        <td className="text-right">
+                        <td className="text-center">
                           <span className="font-cond font-bold" style={{ fontSize: 18 }}>{item.points}</span>
                         </td>
                       )}
                       {hasStandings && (
-                        <td className="text-right text-secondary">{item.wins}</td>
+                        <td className="text-center text-secondary">{item.wins}</td>
                       )}
                       {hasStandings && (
                         <td>
