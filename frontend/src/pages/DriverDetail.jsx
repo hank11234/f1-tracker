@@ -160,8 +160,6 @@ export default function DriverDetail() {
               <div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 13, display: 'flex', alignItems: 'baseline', gap: 16 }}>
                 <span>{driver.nationality}</span>
                 <span className="driver-abbrev" style={{ color, fontSize: 16 }}>{driver.abbreviation}</span>
-                <span>#{driver.number}</span>
-                {currentStanding && <span>P{currentStanding.position} Championship</span>}
               </div>
             </div>
           </div>
