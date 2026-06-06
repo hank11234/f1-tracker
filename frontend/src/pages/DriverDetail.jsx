@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import Loading from '../components/Loading.jsx'
 import PosBadge from '../components/PosBadge.jsx'
-import Tyre from '../components/Tyre.jsx'
 import { formatLapTime, formatDate, getStatusColor } from '../utils.js'
 import { PU_COMPONENTS, SESSION_TYPE_ORDER } from '../constants.js'
 
@@ -16,11 +15,87 @@ function StatBox({ value, label }) {
   )
 }
 
+function sortByRound(rows) {
+  return rows.slice().sort((a, b) =>
+    (a.session?.round || 0) - (b.session?.round || 0) ||
+    (SESSION_TYPE_ORDER[a.session?.session_type] || 9) - (SESSION_TYPE_ORDER[b.session?.session_type] || 9)
+  )
+}
+
+// mode: 'race' (Grid/Status/Points), 'qualifying' (Status), 'practice' (Laps)
+function ResultsTable({ rows, mode }) {
+  const navigate = useNavigate()
+  if (!rows.length) {
+    return <div className="empty-state"><p>No {mode} results yet.</p></div>
+  }
+  return (
+    <div className="table-wrap">
+      <table className="f1-table">
+        <thead>
+          <tr>
+            <th>Round</th>
+            <th>Race</th>
+            <th>Type</th>
+            {mode === 'race' && <th className="text-right">Grid</th>}
+            <th className="text-right">{mode === 'practice' ? 'Pos' : 'Finish'}</th>
+            {mode === 'race' && <th>Status</th>}
+            {mode === 'race' && <th className="text-right">Points</th>}
+            {mode === 'practice' && <th className="text-right">Laps</th>}
+            <th className="text-right">Best Lap</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sortByRound(rows).map((r, i) => (
+            <tr
+              key={i}
+              onClick={() => r.session?.session_key && navigate(`/sessions/${r.session.session_key}`)}
+              style={{ cursor: 'pointer' }}
+            >
+              <td className="text-muted mono">{r.session?.round || '--'}</td>
+              <td>
+                {r.session?.gp_name || r.session?.race_name || r.session?.circuit?.name || r.session?.session_name || '--'}
+              </td>
+              <td className="text-secondary" style={{ fontSize: 12 }}>{r.session?.session_type}</td>
+              {mode === 'race' && (
+                <td className="text-right mono">
+                  {r.status === 'DNS' ? 'DNS' : (r.grid_position || '--')}
+                </td>
+              )}
+              <td className="text-right">
+                {r.position
+                  ? <PosBadge pos={r.position} />
+                  : (['DNF', 'DNS', 'DSQ'].includes(r.status)
+                      ? <span className="pos-badge pos-dnf">{r.status}</span>
+                      : <span className="text-muted font-cond">--</span>)}
+              </td>
+              {mode === 'race' && (
+                <td style={{ color: getStatusColor(r.status), fontSize: 12 }}>{r.status || '--'}</td>
+              )}
+              {mode === 'race' && <td className="text-right font-cond font-bold">{r.points != null ? r.points : '--'}</td>}
+              {mode === 'practice' && <td className="text-right mono">{r.laps_completed || '--'}</td>}
+              <td className="text-right mono" style={{ fontSize: 12 }}>
+                {r.status === 'DNS' ? 'N/A' : (r.best_lap_time_str || '--')}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+const DRIVER_TABS = [
+  ['race', 'Race Results'],
+  ['qualifying', 'Qualifying Results'],
+  ['practice', 'Practice Results'],
+  ['cars', 'Car Parts'],
+]
+
 export default function DriverDetail() {
   const { id } = useParams()
   const [driver, setDriver] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState('results')
+  const [tab, setTab] = useState('race')
 
   useEffect(() => {
     api.driver(id).then(d => {
@@ -35,6 +110,11 @@ export default function DriverDetail() {
   const color = driver.team?.color || '#e8002d'
   const raceResults = driver.results?.filter(r => r.session?.session_type === 'Race') || []
   const qualResults = driver.results?.filter(r => r.session?.session_type === 'Qualifying') || []
+
+  // Results split by tab
+  const raceTabRows = driver.results?.filter(r => ['Race', 'Sprint'].includes(r.session?.session_type)) || []
+  const qualTabRows = driver.results?.filter(r => ['Qualifying', 'Sprint Qualifying'].includes(r.session?.session_type)) || []
+  const practiceTabRows = driver.results?.filter(r => r.session?.session_type === 'Practice') || []
 
   const wins = raceResults.filter(r => r.position === 1).length
   const podiums = raceResults.filter(r => r.position && r.position <= 3).length
@@ -77,7 +157,7 @@ export default function DriverDetail() {
               <h1 style={{ fontSize: 48, lineHeight: 1 }}>
                 {driver.first_name} <span style={{ color }}>{driver.last_name}</span>
               </h1>
-              <div style={{ marginTop: 6, color: 'var(--text-secondary)', fontSize: 13, display: 'flex', gap: 16 }}>
+              <div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 13, display: 'flex', alignItems: 'baseline', gap: 16 }}>
                 <span>{driver.nationality}</span>
                 <span className="driver-abbrev" style={{ color, fontSize: 16 }}>{driver.abbreviation}</span>
                 <span>#{driver.number}</span>
@@ -91,7 +171,7 @@ export default function DriverDetail() {
       <div className="container">
         {/* Stats */}
         <div style={{ marginBottom: 24 }}>
-          <div className="section-label">2025 Season Stats</div>
+          <div className="section-label">{new Date().getFullYear()} Season Stats</div>
           <div className="stat-grid">
             <StatBox value={currentStanding?.position ? `P${currentStanding.position}` : '--'} label="Championship" />
             <StatBox value={currentStanding?.points ?? points} label="Points" />
@@ -104,91 +184,17 @@ export default function DriverDetail() {
 
         {/* Tabs */}
         <div className="tab-bar">
-          {['results', 'laps', 'cars'].map(t => (
+          {DRIVER_TABS.map(([t, label]) => (
             <button key={t} className={`tab-btn${tab === t ? ' active' : ''}`} onClick={() => setTab(t)}>
-              {t === 'results' ? 'Race Results' : t === 'laps' ? 'Best Laps by Track' : 'Car Parts'}
+              {label}
             </button>
           ))}
         </div>
 
-        {/* Results tab */}
-        {tab === 'results' && (
-          <div className="table-wrap">
-            <table className="f1-table">
-              <thead>
-                <tr>
-                  <th>Round</th>
-                  <th>Race</th>
-                  <th>Type</th>
-                  <th className="text-right">Grid</th>
-                  <th className="text-right">Finish</th>
-                  <th>Status</th>
-                  <th className="text-right">Points</th>
-                  <th className="text-right">Best Lap</th>
-                </tr>
-              </thead>
-              <tbody>
-                {driver.results?.slice().sort((a, b) =>
-                    (a.session?.round || 0) - (b.session?.round || 0) ||
-                    (SESSION_TYPE_ORDER[a.session?.session_type] || 9) - (SESSION_TYPE_ORDER[b.session?.session_type] || 9)
-                  ).map((r, i) => (
-                  <tr key={i}>
-                    <td className="text-muted mono">{r.session?.round || '--'}</td>
-                    <td>
-                      <Link to={`/sessions/${r.session?.session_key}`} style={{ color: 'var(--text-primary)' }}>
-                        {r.session?.gp_name || r.session?.race_name || r.session?.circuit?.name || r.session?.session_name || '--'}
-                      </Link>
-                    </td>
-                    <td className="text-secondary" style={{ fontSize: 12 }}>{r.session?.session_type}</td>
-                    <td className="text-right mono">
-                      {r.grid_position
-                        || (['Qualifying', 'Sprint Qualifying'].includes(r.session?.session_type) ? 'N/A' : '--')}
-                    </td>
-                    <td className="text-right">
-                      <PosBadge pos={r.position} />
-                    </td>
-                    <td style={{ color: getStatusColor(r.status), fontSize: 12 }}>{r.status || '--'}</td>
-                    <td className="text-right font-cond font-bold">{r.points != null ? r.points : '--'}</td>
-                    <td className="text-right mono" style={{ fontSize: 12 }}>{r.best_lap_time_str || '--'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Best laps tab */}
-        {tab === 'laps' && (
-          <div className="table-wrap">
-            <table className="f1-table">
-              <thead>
-                <tr>
-                  <th>Circuit</th>
-                  <th>Session</th>
-                  <th>Year</th>
-                  <th className="text-right">Best Lap</th>
-                  <th>Compound</th>
-                  <th className="text-right">Lap #</th>
-                </tr>
-              </thead>
-              <tbody>
-                {driver.best_laps_by_circuit?.sort((a, b) => a.circuit.localeCompare(b.circuit)).map((lap, i) => (
-                  <tr key={i}>
-                    <td className="font-bold">{lap.circuit}</td>
-                    <td className="text-secondary" style={{ fontSize: 12 }}>{lap.session_type}</td>
-                    <td className="text-muted">{lap.year}</td>
-                    <td className="text-right mono font-bold" style={{ color }}>{lap.time_str}</td>
-                    <td><Tyre compound={lap.compound} /></td>
-                    <td className="text-right text-muted">{lap.lap_number}</td>
-                  </tr>
-                ))}
-                {!driver.best_laps_by_circuit?.length && (
-                  <tr><td colSpan={6} className="text-center text-muted" style={{ padding: 24 }}>No lap data yet</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {/* Result tabs */}
+        {tab === 'race' && <ResultsTable rows={raceTabRows} mode="race" />}
+        {tab === 'qualifying' && <ResultsTable rows={qualTabRows} mode="qualifying" />}
+        {tab === 'practice' && <ResultsTable rows={practiceTabRows} mode="practice" />}
 
         {/* Car parts tab */}
         {tab === 'cars' && (

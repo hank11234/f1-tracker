@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import Loading from '../components/Loading.jsx'
 import PosBadge from '../components/PosBadge.jsx'
@@ -9,6 +9,7 @@ export default function Teams() {
   const [standings, setStandings] = useState([])
   const [allTeams, setAllTeams] = useState([])
   const [loading, setLoading] = useState(true)
+  const navigate = useNavigate()
 
   useEffect(() => {
     Promise.all([
@@ -67,15 +68,19 @@ export default function Teams() {
                   if (!t) return null
                   const pct = item.points ? Math.round((item.points / maxPts) * 100) : 0
                   return (
-                    <tr key={t.constructor_id || idx}>
+                    <tr
+                      key={t.constructor_id || idx}
+                      onClick={() => navigate(`/teams/${t.constructor_id}`)}
+                      style={{ cursor: 'pointer' }}
+                    >
                       <td style={{ width: 50 }}>
                         <PosBadge pos={item.position} />
                       </td>
                       <td>
-                        <Link to={`/teams/${t.constructor_id}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                           <span style={{ width: 4, height: 32, background: t.color, borderRadius: 2, flexShrink: 0 }} />
                           <span className="font-cond font-bold" style={{ fontSize: 16 }}>{t.name}</span>
-                        </Link>
+                        </span>
                       </td>
                       <td><Flag code={t.flag} title={t.nationality} /></td>
                       {hasStandings && (

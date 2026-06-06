@@ -476,8 +476,9 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict,
                 await asyncio.sleep(1.5)
                 await sync_openf1_session_detail(db, existing, sk)
 
-    # Fill derived stats (grid, best lap, qualifying segment) now that all
-    # sessions and their results/laps exist.
+    # Populate results for every completed session (incl. sprint-weekend races
+    # and practices) independent of lap syncing, then fill derived stats.
+    await _backfill_session_results(db)
     await _backfill_result_stats(db)
 
     logger.info(f"OpenF1 sessions sync complete: {len(sessions)} sessions")
@@ -641,14 +642,8 @@ async def sync_openf1_session_detail(db: Session, session: models.Session, sessi
         ))
 
     db.commit()
-
-    # Populate classification (results) from OpenF1's session_result endpoint
-    # for races, sprints, and qualifying sessions that don't have results yet.
-    if session.session_type in ("Race", "Sprint", "Qualifying", "Sprint Qualifying"):
-        existing_results = db.query(models.SessionResult).filter_by(session_id=session.id).count()
-        if existing_results == 0 and driver_map:
-            await _sync_session_results_from_openf1(db, session, session_key, driver_map)
-
+    # Results are populated separately by _backfill_session_results (decoupled
+    # from laps so a rate-limited lap fetch can't block a session's results).
     logger.info(f"Session {session_key} detail sync complete")
 
 
@@ -679,20 +674,16 @@ def _best_quali_time(duration) -> Optional[float]:
     return None
 
 
-async def _sync_session_results_from_openf1(
-    db: Session, session: models.Session, session_key: int, driver_map: dict
-):
-    """Store SessionResult rows from OpenF1's official /session_result classification.
+def _store_session_results(db: Session, session: models.Session,
+                           results: list, number_to_driver: dict) -> int:
+    """Create SessionResult rows from an OpenF1 /session_result list.
 
-    Handles races/sprints (position, points, laps, status, gap) and qualifying
-    sessions (position + best lap time). Grid positions for races are filled
-    afterwards by _backfill_grid_positions.
+    Race/Sprint: position, points, laps, status, gap.
+    Qualifying/Practice: position, best lap (from duration), laps; no points.
     """
-    results = await openf1.get_session_result(session_key)
-    if not results:
-        return
-
-    is_quali = session.session_type in ("Qualifying", "Sprint Qualifying")
+    is_classified = session.session_type in (
+        "Qualifying", "Sprint Qualifying", "Practice"
+    )
     is_sprint = session.session_type == "Sprint"
     points_map = SPRINT_POINTS_MAP if is_sprint else POINTS_MAP
 
@@ -700,27 +691,37 @@ async def _sync_session_results_from_openf1(
     for row in results:
         num = row.get("driver_number")
         position = row.get("position")
-        driver = driver_map.get(num)
-        if not driver or position is None:
+        driver = number_to_driver.get(num)
+        if not driver:
+            continue
+        dnf = bool(row.get("dnf"))
+        dns = bool(row.get("dns"))
+        dsq = bool(row.get("dsq"))
+        # A driver with no finishing position is only a real result if they
+        # were classified DNF/DNS/DSQ; otherwise there's no data for them.
+        if position is None and not (dnf or dns or dsq):
             continue
         if db.query(models.SessionResult).filter_by(
             session_id=session.id, driver_id=driver.id
         ).first():
             continue
 
-        if is_quali:
+        if is_classified:
+            # Qualifying / Practice need an actual classification position.
+            if position is None:
+                continue
             db.add(models.SessionResult(
                 session_id=session.id,
                 driver_id=driver.id,
                 position=position,
                 best_lap_time=_best_quali_time(row.get("duration")),
+                laps_completed=row.get("number_of_laps"),
                 points=0,
             ))
-        else:
-            # Trust the official points; fall back to the map if absent.
+        else:  # Race / Sprint — keep DNF/DNS/DSQ rows (position may be null)
             pts = row.get("points")
             if pts is None:
-                pts = points_map.get(position, 0)
+                pts = points_map.get(position, 0) if position else 0
             gap = row.get("gap_to_leader")
             if isinstance(gap, (int, float)):
                 gap_str = "LEADER" if gap == 0 else f"+{gap:.3f}"
@@ -738,8 +739,50 @@ async def _sync_session_results_from_openf1(
         count += 1
 
     db.commit()
-    logger.info(f"Stored {count} results from session_result for {session_key} "
-                f"({session.session_type})")
+    return count
+
+
+async def _backfill_session_results(db: Session):
+    """Populate results for any completed session that's still missing them.
+
+    Decoupled from lap syncing: results come from a single /session_result call
+    per session, so a rate-limited lap fetch can't block a session's results
+    (this is why sprint-weekend races and practices were previously empty).
+    Runs every sync, so missing sessions are retried until they fill in.
+    """
+    number_to_driver = {
+        d.driver_number: d for d in db.query(models.Driver).all() if d.driver_number
+    }
+    if not number_to_driver:
+        return
+
+    types = ("Race", "Sprint", "Qualifying", "Sprint Qualifying", "Practice")
+    pending = (
+        db.query(models.Session)
+        .filter(
+            models.Session.year == CURRENT_YEAR,
+            models.Session.status == "completed",
+            models.Session.session_type.in_(types),
+        )
+        .all()
+    )
+
+    total = 0
+    for session in pending:
+        if not (session.session_key and session.session_key > 0):
+            continue
+        # Canceled weekends have no results — don't retry them every sync.
+        if session.circuit and session.circuit.circuit_id in CANCELED_CIRCUITS:
+            continue
+        if db.query(models.SessionResult).filter_by(session_id=session.id).count() > 0:
+            continue
+        results = await openf1.get_session_result(session.session_key)
+        if results:
+            total += _store_session_results(db, session, results, number_to_driver)
+        await asyncio.sleep(1.0)  # be gentle with the OpenF1 rate limit
+
+    if total:
+        logger.info(f"Backfilled {total} session results")
 
 
 def _quali_segment(position: int) -> str:

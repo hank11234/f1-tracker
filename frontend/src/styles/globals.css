@@ -349,6 +349,13 @@ button {
 .pos-2 { background: var(--silver); color: #000; }
 .pos-3 { background: var(--bronze); color: #fff; }
 .pos-other { background: var(--bg-primary); color: var(--text-secondary); border: 1px solid var(--border-light); }
+.pos-dnf {
+  background: var(--bg-primary);
+  color: #ff6b6b;
+  border: 1px solid rgba(232, 0, 45, 0.5);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
 
 /* ── Driver Chip ─────────────────────────────────────────── */
 

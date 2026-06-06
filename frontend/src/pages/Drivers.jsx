@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import Loading from '../components/Loading.jsx'
 import PosBadge from '../components/PosBadge.jsx'
@@ -9,6 +9,7 @@ export default function Drivers() {
   const [standings, setStandings] = useState([])
   const [allDrivers, setAllDrivers] = useState([])
   const [loading, setLoading] = useState(true)
+  const navigate = useNavigate()
 
   useEffect(() => {
     Promise.all([
@@ -74,14 +75,18 @@ export default function Drivers() {
                   if (!d) return null
                   const pct = item.points ? Math.round((item.points / maxPts) * 100) : 0
                   return (
-                    <tr key={d.driver_id || idx}>
+                    <tr
+                      key={d.driver_id || idx}
+                      onClick={() => navigate(`/drivers/${d.driver_id}`)}
+                      style={{ cursor: 'pointer' }}
+                    >
                       <td style={{ width: 50 }}>
                         {item.position
                           ? <PosBadge pos={item.position} />
                           : <span className="text-muted font-cond" style={{ fontSize: 13 }}>{idx + 1}</span>}
                       </td>
                       <td>
-                        <Link to={`/drivers/${d.driver_id}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                           <span className="driver-color-bar" style={{ background: d.team?.color || '#e8002d' }} />
                           <span>
                             <span className="driver-abbrev">{d.abbreviation}</span>
@@ -89,10 +94,15 @@ export default function Drivers() {
                               {d.first_name} {d.last_name}
                             </span>
                           </span>
-                        </Link>
+                        </span>
                       </td>
                       <td>
-                        <Link to={`/teams/${d.team?.constructor_id}`} className="text-secondary" style={{ fontSize: 13 }}>
+                        <Link
+                          to={`/teams/${d.team?.constructor_id}`}
+                          className="text-secondary"
+                          style={{ fontSize: 13 }}
+                          onClick={e => e.stopPropagation()}
+                        >
                           {d.team?.name || '--'}
                         </Link>
                       </td>
