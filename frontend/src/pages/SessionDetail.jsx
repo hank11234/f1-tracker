@@ -63,7 +63,15 @@ export default function SessionDetail() {
               <div className="text-muted" style={{ fontSize: 11, letterSpacing: '0.15em', textTransform: 'uppercase', fontFamily: 'Barlow Condensed', marginBottom: 4 }}>
                 Round {session.round} · {session.year}
               </div>
-              <h1 style={{ fontSize: 34 }}>{session.session_type}</h1>
+              <h1 style={{
+                fontSize: 34,
+                textDecoration: session.canceled ? 'line-through' : 'none',
+                textDecorationColor: session.canceled ? 'var(--text-muted)' : undefined,
+                textDecorationThickness: session.canceled ? '4px' : undefined,
+                opacity: session.canceled ? 0.85 : 1,
+              }}>
+                {session.session_type}
+              </h1>
               <div style={{ color: 'var(--text-secondary)', fontSize: 14, marginTop: 4 }}>
                 {session.circuit?.name} — {session.circuit?.location}, {session.circuit?.country}
               </div>
@@ -71,7 +79,9 @@ export default function SessionDetail() {
                 {formatDate(session.date_start)}
               </div>
             </div>
-            <span className={`badge badge-${session.status}`} style={{ marginTop: 8 }}>{session.status}</span>
+            {session.canceled
+              ? <span className="badge badge-canceled" style={{ marginTop: 8 }}>Canceled</span>
+              : <span className={`badge badge-${session.status}`} style={{ marginTop: 8 }}>{session.status}</span>}
           </div>
         </div>
       </div>

@@ -62,14 +62,29 @@ export default function Sessions() {
           <div className="empty-state"><p>No sessions found.</p></div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            {rounds.map(round => (
-              <div key={`${round.year}-${round.round}`} className="card">
+            {rounds.map(round => {
+              const roundCanceled = round.sessions.some(s => s.canceled)
+              return (
+              <div key={`${round.year}-${round.round}`} className={roundCanceled ? 'card session-canceled' : 'card'}>
                 <div className="card-header">
                   <div>
                     <span className="text-muted" style={{ fontSize: 11, letterSpacing: '0.15em', textTransform: 'uppercase', fontFamily: 'Barlow Condensed' }}>
                       Round {round.round} · {round.year}
                     </span>
-                    <h3 style={{ marginTop: 2 }}>{round.circuit?.name || 'Unknown Circuit'}</h3>
+                    <h3 style={{
+                      marginTop: 2,
+                      textDecoration: roundCanceled ? 'line-through' : 'none',
+                      textDecorationColor: roundCanceled ? 'var(--text-muted)' : undefined,
+                      textDecorationThickness: roundCanceled ? '3px' : undefined,
+                      opacity: roundCanceled ? 0.8 : 1,
+                    }}>
+                      {round.circuit?.name || 'Unknown Circuit'}
+                      {roundCanceled && (
+                        <span className="badge badge-canceled" style={{ marginLeft: 10, verticalAlign: 'middle', textDecoration: 'none' }}>
+                          Canceled
+                        </span>
+                      )}
+                    </h3>
                     <span className="text-secondary" style={{ fontSize: 12 }}>
                       {round.circuit?.location}, {round.circuit?.country}
                     </span>
@@ -90,15 +105,15 @@ export default function Sessions() {
                           borderBottom: '1px solid var(--border)',
                           transition: 'background 0.1s',
                         }}
-                        onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-card-hover)'}
-                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                        onMouseEnter={e => { if (!s.canceled) e.currentTarget.style.background = 'var(--bg-card-hover)' }}
+                        onMouseLeave={e => { if (!s.canceled) e.currentTarget.style.background = 'transparent' }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                           <span style={{
                             width: 3, height: 20, background: SESSION_COLORS[s.session_type] || '#888',
                             borderRadius: 2, flexShrink: 0,
                           }} />
-                          <span className="font-cond" style={{ fontSize: 15, fontWeight: 600 }}>
+                          <span className="font-cond session-title" style={{ fontSize: 15, fontWeight: 600 }}>
                             {s.session_type}
                           </span>
                         </div>
@@ -106,13 +121,16 @@ export default function Sessions() {
                           <span className="text-muted" style={{ fontSize: 12 }}>
                             {formatDate(s.date_start)}
                           </span>
-                          <span className={`badge badge-${s.status}`}>{s.status}</span>
+                          {s.canceled
+                            ? <span className="badge badge-canceled">Canceled</span>
+                            : <span className={`badge badge-${s.status}`}>{s.status}</span>}
                         </div>
                       </Link>
                     ))}
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

@@ -85,6 +85,11 @@ NATIONALITY_TO_COUNTRY = {
     "New Zealander": "New Zealand", "Austrian": "Austria", "Swiss": "Switzerland",
 }
 
+# Races canceled in real life — keyed by circuit_id (derived from the OpenF1
+# location, lowercased with underscores). All sessions of these weekends are
+# shown as canceled across the site.
+CANCELED_CIRCUITS = {"jeddah", "sakhir"}
+
 app = FastAPI(title="F1 Tracker API", version="1.0.0")
 
 app.add_middleware(
@@ -894,6 +899,7 @@ def serialize_session(s: models.Session) -> dict:
         "session_type": s.session_type,
         "session_name": s.session_name,
         "race_name": s.race_name,
+        "canceled": bool(circuit and circuit.circuit_id in CANCELED_CIRCUITS),
         "date_start": s.date_start.isoformat() if s.date_start else None,
         "date_end": s.date_end.isoformat() if s.date_end else None,
         "status": s.status,

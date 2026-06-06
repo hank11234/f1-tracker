@@ -39,6 +39,47 @@ function PointsBar({ points, maxPoints }) {
   )
 }
 
+function SessionCard({ s, defaultBadge }) {
+  const canceled = s.canceled
+  const badge = canceled ? { label: 'Canceled', cls: 'badge-canceled' } : defaultBadge
+  return (
+    <Link
+      to={`/sessions/${s.session_key}`}
+      className={canceled ? 'session-canceled' : undefined}
+      style={{
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius)',
+        padding: '12px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        transition: 'background 0.1s',
+      }}
+      onMouseEnter={e => { if (!canceled) e.currentTarget.style.background = 'var(--bg-card-hover)' }}
+      onMouseLeave={e => { if (!canceled) e.currentTarget.style.background = 'var(--bg-card)' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span className="race-label" style={{ fontSize: 15 }}>
+          <span className="font-cond font-bold">
+            {s.race_name || s.circuit?.name || s.session_name}
+          </span>
+          {s.circuit?.location && (
+            <span className={canceled ? 'font-cond' : undefined} style={{ color: 'var(--text-muted)', fontSize: canceled ? undefined : 12 }}>
+              {'  '}{s.circuit.location}
+            </span>
+          )}
+        </span>
+        {s.circuit?.flag && <Flag code={s.circuit.flag} title={s.circuit.country} size={20} />}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <span className="text-secondary" style={{ fontSize: 12 }}>{formatDate(s.date_start)}</span>
+        <span className={`badge ${badge.cls}`}>{badge.label}</span>
+      </div>
+    </Link>
+  )
+}
+
 export default function Home() {
   const [driverStandings, setDriverStandings] = useState([])
   const [constructorStandings, setConstructorStandings] = useState([])
@@ -231,42 +272,11 @@ export default function Home() {
             <div className="section-label">Recent Sessions</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {recentSessions.map(s => (
-                <Link
+                <SessionCard
                   key={s.session_key}
-                  to={`/sessions/${s.session_key}`}
-                  style={{
-                    background: 'var(--bg-card)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius)',
-                    padding: '12px 16px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    transition: 'background 0.1s',
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-card-hover)'}
-                  onMouseLeave={e => e.currentTarget.style.background = 'var(--bg-card)'}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span className="font-cond font-bold" style={{ fontSize: 15 }}>
-                      {s.race_name || s.circuit?.name || s.session_name}
-                    </span>
-                    {s.circuit?.location && (
-                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                        {s.circuit.location}
-                      </span>
-                    )}
-                    {s.circuit?.flag && (
-                      <Flag code={s.circuit.flag} title={s.circuit.country} size={20} />
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span className="text-secondary" style={{ fontSize: 12 }}>
-                      {formatDate(s.date_start)}
-                    </span>
-                    <span className="badge badge-completed">Completed</span>
-                  </div>
-                </Link>
+                  s={s}
+                  defaultBadge={{ label: 'Completed', cls: 'badge-completed' }}
+                />
               ))}
             </div>
           </div>
@@ -278,38 +288,11 @@ export default function Home() {
             <div className="section-label">Upcoming</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {upcomingSessions.map(s => (
-                <div
+                <SessionCard
                   key={s.session_key}
-                  style={{
-                    background: 'var(--bg-card)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius)',
-                    padding: '12px 16px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span className="font-cond font-bold" style={{ fontSize: 15 }}>
-                      {s.race_name || s.circuit?.name || s.session_name}
-                    </span>
-                    {s.circuit?.location && (
-                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                        {s.circuit.location}
-                      </span>
-                    )}
-                    {s.circuit?.flag && (
-                      <Flag code={s.circuit.flag} title={s.circuit.country} size={20} />
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span className="text-secondary" style={{ fontSize: 12 }}>
-                      {formatDate(s.date_start)}
-                    </span>
-                    <span className="badge badge-upcoming">Upcoming</span>
-                  </div>
-                </div>
+                  s={s}
+                  defaultBadge={{ label: 'Upcoming', cls: 'badge-upcoming' }}
+                />
               ))}
             </div>
           </div>

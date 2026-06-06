@@ -535,6 +535,30 @@ button {
 .badge-live { background: var(--f1-red); color: #fff; }
 .badge-completed { background: var(--border); color: var(--text-secondary); }
 .badge-upcoming { background: transparent; border: 1px solid var(--border-light); color: var(--text-muted); }
+.badge-canceled { background: rgba(232, 0, 45, 0.18); color: #ff6b6b; border: 1px solid rgba(232, 0, 45, 0.5); }
+
+/* Canceled race weekend — red-tinted box with struck-through text */
+.session-canceled {
+  background: rgba(232, 0, 45, 0.09) !important;
+  border-color: rgba(232, 0, 45, 0.45) !important;
+}
+
+/* Continuous strikethrough across the race name + location. Native
+   line-through (not an overlaid bar) sits exactly on the text's x-height —
+   equal space above and below — and stays unbroken across the inline gap. */
+.session-canceled .race-label {
+  text-decoration: line-through;
+  text-decoration-color: var(--text-muted);
+  text-decoration-thickness: 3px;
+}
+
+/* Single-label strikethrough (e.g. the session type on the Sessions page) */
+.session-canceled .session-title {
+  text-decoration: line-through;
+  text-decoration-color: var(--text-muted);
+  text-decoration-thickness: 3px;
+  opacity: 0.85;
+}
 
 .divider {
   height: 1px;
