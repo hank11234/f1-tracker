@@ -5,7 +5,7 @@ import Loading from '../components/Loading.jsx'
 import PosBadge from '../components/PosBadge.jsx'
 import Tyre from '../components/Tyre.jsx'
 import { formatLapTime, formatDate, getStatusColor } from '../utils.js'
-import { PU_COMPONENTS } from '../constants.js'
+import { PU_COMPONENTS, SESSION_TYPE_ORDER } from '../constants.js'
 
 function StatBox({ value, label }) {
   return (
@@ -128,21 +128,27 @@ export default function DriverDetail() {
                 </tr>
               </thead>
               <tbody>
-                {driver.results?.sort((a, b) => (b.session?.round || 0) - (a.session?.round || 0)).map((r, i) => (
+                {driver.results?.slice().sort((a, b) =>
+                    (a.session?.round || 0) - (b.session?.round || 0) ||
+                    (SESSION_TYPE_ORDER[a.session?.session_type] || 9) - (SESSION_TYPE_ORDER[b.session?.session_type] || 9)
+                  ).map((r, i) => (
                   <tr key={i}>
                     <td className="text-muted mono">{r.session?.round || '--'}</td>
                     <td>
                       <Link to={`/sessions/${r.session?.session_key}`} style={{ color: 'var(--text-primary)' }}>
-                        {r.session?.circuit?.name || r.session?.session_name || '--'}
+                        {r.session?.race_name || r.session?.circuit?.name || r.session?.session_name || '--'}
                       </Link>
                     </td>
                     <td className="text-secondary" style={{ fontSize: 12 }}>{r.session?.session_type}</td>
-                    <td className="text-right mono">{r.grid_position || '--'}</td>
+                    <td className="text-right mono">
+                      {r.grid_position
+                        || (['Qualifying', 'Sprint Qualifying'].includes(r.session?.session_type) ? 'N/A' : '--')}
+                    </td>
                     <td className="text-right">
                       <PosBadge pos={r.position} />
                     </td>
                     <td style={{ color: getStatusColor(r.status), fontSize: 12 }}>{r.status || '--'}</td>
-                    <td className="text-right font-cond font-bold">{r.points || '--'}</td>
+                    <td className="text-right font-cond font-bold">{r.points != null ? r.points : '--'}</td>
                     <td className="text-right mono" style={{ fontSize: 12 }}>{r.best_lap_time_str || '--'}</td>
                   </tr>
                 ))}

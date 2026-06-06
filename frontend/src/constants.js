@@ -30,10 +30,12 @@ export const COMPOUND_SHORT = {
 }
 
 export const SESSION_TYPE_ORDER = {
+  'Practice': 1,
   'Practice 1': 1,
   'Practice 2': 2,
   'Practice 3': 3,
   'Sprint Shootout': 4,
+  'Sprint Qualifying': 4,
   'Sprint': 5,
   'Qualifying': 6,
   'Race': 7,

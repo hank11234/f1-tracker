@@ -458,8 +458,9 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict,
                 await asyncio.sleep(1.5)
                 await sync_openf1_session_detail(db, existing, sk)
 
-    # Fill race grid/start positions now that qualifying results exist.
-    await _backfill_grid_positions(db)
+    # Fill derived stats (grid, best lap, qualifying segment) now that all
+    # sessions and their results/laps exist.
+    await _backfill_result_stats(db)
 
     logger.info(f"OpenF1 sessions sync complete: {len(sessions)} sessions")
 
@@ -723,54 +724,97 @@ async def _sync_session_results_from_openf1(
                 f"({session.session_type})")
 
 
-async def _backfill_grid_positions(db: Session):
-    """Fill race grid (start) positions. Prefer OpenF1's /starting_grid; fall
-    back to the matching qualifying classification (grid order ignoring penalties)."""
+def _quali_segment(position: int) -> str:
+    """Map a qualifying classification to the segment reached."""
+    if position <= 10:
+        return "Q3"
+    if position <= 15:
+        return "Q2"
+    return "Q1"
+
+
+async def _backfill_result_stats(db: Session):
+    """Fill derived per-result stats that /session_result doesn't include, so the
+    driver pages show complete Grid / Status / Points / Best Lap. Runs every sync
+    (via sync_openf1_sessions) so it stays current as new sessions complete.
+
+      - Grid: races from Qualifying, sprints from Sprint Qualifying (or OpenF1
+        /starting_grid for the main race when available).
+      - Best lap: fastest non-deleted lap per driver, for Race/Sprint results.
+      - Status: a Q1/Q2/Q3 segment label for qualifying-type results.
+    """
     number_to_driver = {
         d.driver_number: d for d in db.query(models.Driver).all() if d.driver_number
     }
-    races = db.query(models.Session).filter_by(
-        year=CURRENT_YEAR, session_type="Race"
-    ).all()
 
-    filled = 0
-    for race in races:
-        race_results = db.query(models.SessionResult).filter_by(session_id=race.id).all()
-        if not race_results or all(r.grid_position is not None for r in race_results):
+    # --- Grid positions (race<-Qualifying, sprint<-Sprint Qualifying) ---
+    grid_filled = 0
+    for race_type, quali_type in (("Race", "Qualifying"), ("Sprint", "Sprint Qualifying")):
+        for race in db.query(models.Session).filter_by(
+            year=CURRENT_YEAR, session_type=race_type
+        ).all():
+            race_results = db.query(models.SessionResult).filter_by(session_id=race.id).all()
+            if not race_results or all(r.grid_position is not None for r in race_results):
+                continue
+            grid: dict[int, int] = {}
+            # Prefer OpenF1's official starting grid for the main race
+            if race_type == "Race" and race.session_key and race.session_key > 0:
+                for row in await openf1.get_starting_grid(race.session_key):
+                    d = number_to_driver.get(row.get("driver_number"))
+                    if d and row.get("position"):
+                        grid[d.id] = row["position"]
+            # Fall back to the qualifying classification for the same round
+            if not grid:
+                quali = db.query(models.Session).filter_by(
+                    year=CURRENT_YEAR, round_number=race.round_number, session_type=quali_type
+                ).first()
+                if quali:
+                    for qr in db.query(models.SessionResult).filter_by(session_id=quali.id).all():
+                        if qr.position:
+                            grid[qr.driver_id] = qr.position
+            for rr in race_results:
+                if rr.grid_position is None and rr.driver_id in grid:
+                    rr.grid_position = grid[rr.driver_id]
+                    grid_filled += 1
+
+    # --- Best lap for Race/Sprint results, from the lap table ---
+    lap_filled = 0
+    for session in db.query(models.Session).filter(
+        models.Session.year == CURRENT_YEAR,
+        models.Session.session_type.in_(["Race", "Sprint"]),
+    ).all():
+        best_by_driver = dict(
+            db.query(models.Lap.driver_id, func.min(models.Lap.lap_time))
+            .filter(
+                models.Lap.session_id == session.id,
+                models.Lap.is_deleted == False,  # noqa: E712
+                models.Lap.lap_time.isnot(None),
+            )
+            .group_by(models.Lap.driver_id)
+            .all()
+        )
+        if not best_by_driver:
             continue
+        for rr in db.query(models.SessionResult).filter_by(session_id=session.id).all():
+            if rr.best_lap_time is None and best_by_driver.get(rr.driver_id):
+                rr.best_lap_time = best_by_driver[rr.driver_id]
+                lap_filled += 1
 
-        # grid map: driver_id -> grid position
-        grid: dict[int, int] = {}
-
-        # 1. Try OpenF1 starting_grid (only when we have a real OpenF1 key)
-        if race.session_key and race.session_key > 0:
-            for row in await openf1.get_starting_grid(race.session_key):
-                d = number_to_driver.get(row.get("driver_number"))
-                pos = row.get("position")
-                if d and pos:
-                    grid[d.id] = pos
-
-        # 2. Fall back to qualifying classification for the same round
-        if not grid:
-            quali = db.query(models.Session).filter_by(
-                year=CURRENT_YEAR, round_number=race.round_number, session_type="Qualifying"
-            ).first()
-            if quali:
-                for qr in db.query(models.SessionResult).filter_by(session_id=quali.id).all():
-                    if qr.position:
-                        grid[qr.driver_id] = qr.position
-
-        if not grid:
-            continue
-
-        for rr in race_results:
-            if rr.grid_position is None and rr.driver_id in grid:
-                rr.grid_position = grid[rr.driver_id]
-                filled += 1
+    # --- Qualifying status = segment reached (Q1/Q2/Q3) ---
+    quali_filled = 0
+    for session in db.query(models.Session).filter(
+        models.Session.year == CURRENT_YEAR,
+        models.Session.session_type.in_(["Qualifying", "Sprint Qualifying"]),
+    ).all():
+        for rr in db.query(models.SessionResult).filter_by(session_id=session.id).all():
+            if not rr.status and rr.position:
+                rr.status = _quali_segment(rr.position)
+                quali_filled += 1
 
     db.commit()
-    if filled:
-        logger.info(f"Backfilled {filled} grid positions")
+    if grid_filled or lap_filled or quali_filled:
+        logger.info(f"Backfilled result stats: grid={grid_filled}, "
+                    f"best_lap={lap_filled}, quali_status={quali_filled}")
 
 
 # Master sync
