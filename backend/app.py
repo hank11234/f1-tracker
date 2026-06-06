@@ -122,6 +122,9 @@ def _run_migrations():
         if "race_name" not in cols:
             conn.execute(text("ALTER TABLE sessions ADD COLUMN race_name VARCHAR"))
             logger.info("Migration: added sessions.race_name")
+        if "gp_name" not in cols:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN gp_name VARCHAR"))
+            logger.info("Migration: added sessions.gp_name")
 
 
 def _start_scheduler():
@@ -261,13 +264,21 @@ def clean_race_name(official: str) -> str:
 
 
 async def _build_meeting_name_map() -> dict:
-    """{meeting_key: cleaned official race name} from OpenF1 /meetings."""
+    """{meeting_key: {"official": ..., "short": ...}} from OpenF1 /meetings.
+
+    official = cleaned sponsored name ("Lenovo Grand Prix Du Canada"),
+    short    = plain GP name ("Canadian Grand Prix").
+    """
     meetings = await openf1.get_meetings(CURRENT_YEAR)
     out = {}
     for m in meetings:
         mk = m.get("meeting_key")
         if mk:
-            out[mk] = clean_race_name(m.get("meeting_official_name", "")) or m.get("meeting_name", "")
+            short = m.get("meeting_name", "")
+            out[mk] = {
+                "official": clean_race_name(m.get("meeting_official_name", "")) or short,
+                "short": short,
+            }
     return out
 
 
@@ -381,7 +392,9 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict,
 
         meeting_key = s.get("meeting_key")
         round_num = meeting_round_map.get(meeting_key, 0)
-        race_name = meeting_name_map.get(meeting_key, "")
+        names = meeting_name_map.get(meeting_key) or {}
+        race_name = names.get("official", "")
+        gp_name = names.get("short", "")
         session_type = _normalize_session_type(
             s.get("session_type", "Unknown"), s.get("session_name", "")
         )
@@ -408,6 +421,8 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict,
             existing.status = status
             if race_name:
                 existing.race_name = race_name
+            if gp_name:
+                existing.gp_name = gp_name
         elif round_num > 0:
             # Look up by canonical (year, round, type) to catch any legacy row
             existing = db.query(models.Session).filter_by(
@@ -421,6 +436,8 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict,
                 existing.status = status
                 if race_name:
                     existing.race_name = race_name
+                if gp_name:
+                    existing.gp_name = gp_name
             else:
                 # Brand-new session — create with correct round number
                 loc = s.get("location", "Unknown")
@@ -438,6 +455,7 @@ async def sync_openf1_sessions(db: Session, meeting_round_map: dict,
                     session_type=session_type,
                     session_name=s.get("session_name", session_type),
                     race_name=race_name or None,
+                    gp_name=gp_name or None,
                     date_start=date_start,
                     date_end=date_end,
                     status=status,
@@ -943,6 +961,7 @@ def serialize_session(s: models.Session) -> dict:
         "session_type": s.session_type,
         "session_name": s.session_name,
         "race_name": s.race_name,
+        "gp_name": s.gp_name,
         "canceled": bool(circuit and circuit.circuit_id in CANCELED_CIRCUITS),
         "date_start": s.date_start.isoformat() if s.date_start else None,
         "date_end": s.date_end.isoformat() if s.date_end else None,

@@ -136,7 +136,7 @@ export default function DriverDetail() {
                     <td className="text-muted mono">{r.session?.round || '--'}</td>
                     <td>
                       <Link to={`/sessions/${r.session?.session_key}`} style={{ color: 'var(--text-primary)' }}>
-                        {r.session?.race_name || r.session?.circuit?.name || r.session?.session_name || '--'}
+                        {r.session?.gp_name || r.session?.race_name || r.session?.circuit?.name || r.session?.session_name || '--'}
                       </Link>
                     </td>
                     <td className="text-secondary" style={{ fontSize: 12 }}>{r.session?.session_type}</td>
