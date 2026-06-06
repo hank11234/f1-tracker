@@ -248,7 +248,11 @@ def clean_race_name(official: str) -> str:
     s = official.strip()
     s = re.sub(r"^FORMULA\s+1\s+", "", s, flags=re.IGNORECASE)  # drop "FORMULA 1 "
     s = re.sub(r"\s+\d{4}$", "", s)                              # drop trailing year
-    return s.title().strip()
+    s = s.title().strip()
+    # .title() wrongly capitalises web-domain suffixes ("crypto.com" ->
+    # "Crypto.Com"); restore lowercase for any ".Xxx" domain fragment.
+    s = re.sub(r"\.([A-Za-z]{2,4})\b", lambda m: "." + m.group(1).lower(), s)
+    return s
 
 
 async def _build_meeting_name_map() -> dict:
