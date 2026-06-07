@@ -21,7 +21,7 @@ export default function Tracks() {
       <div className="page-header">
         <div className="container">
           <h1>Tracks</h1>
-          <p className="subtitle">All circuits from the 2025 Formula 1 calendar</p>
+          <p className="subtitle">All circuits from the {new Date().getFullYear()} Formula 1 calendar</p>
         </div>
       </div>
 

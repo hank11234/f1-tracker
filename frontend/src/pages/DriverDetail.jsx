@@ -198,7 +198,7 @@ export default function DriverDetail() {
         {tab === 'cars' && (
           <div>
             <div style={{ marginBottom: 16, color: 'var(--text-secondary)', fontSize: 13 }}>
-              Power unit component usage for 2025. Exceeding the allocation limit triggers a grid penalty.
+              Power unit component usage for {new Date().getFullYear()}. Exceeding the allocation limit triggers a grid penalty.
             </div>
             <div className="pu-grid" style={{ marginBottom: 24 }}>
               {PU_COMPONENTS.map(comp => {

@@ -35,7 +35,7 @@ export default function Cars() {
         <div className="container">
           <h1>Car Components</h1>
           <p className="subtitle">
-            Power unit component usage — 2025 season. Exceeding the allocation triggers a grid penalty.
+            Power unit component usage — {new Date().getFullYear()} season. Exceeding the allocation triggers a grid penalty.
           </p>
         </div>
       </div>

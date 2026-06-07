@@ -40,7 +40,7 @@ export default function Sessions() {
       <div className="page-header">
         <div className="container">
           <h1>Sessions</h1>
-          <p className="subtitle">All sessions from the 2025 Formula 1 season</p>
+          <p className="subtitle">All sessions from the {new Date().getFullYear()} Formula 1 season</p>
         </div>
       </div>
 
