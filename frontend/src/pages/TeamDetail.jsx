@@ -1,16 +1,101 @@
 import { useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import Loading from '../components/Loading.jsx'
 import PosBadge from '../components/PosBadge.jsx'
-import { formatDate, getStatusColor } from '../utils.js'
-import { PU_COMPONENTS } from '../constants.js'
+import { getStatusColor } from '../utils.js'
+import { PU_COMPONENTS, SESSION_TYPE_ORDER } from '../constants.js'
+
+function sortTeamRows(rows) {
+  return rows.slice().sort((a, b) =>
+    (a.session?.round || 0) - (b.session?.round || 0) ||
+    (SESSION_TYPE_ORDER[a.session?.session_type] || 9) - (SESSION_TYPE_ORDER[b.session?.session_type] || 9) ||
+    (a.driver?.number || 0) - (b.driver?.number || 0)
+  )
+}
+
+// mode: 'race' (Grid/Status/Points), 'qualifying' (no Status), 'practice' (Laps)
+function TeamResultsTable({ rows, mode }) {
+  const navigate = useNavigate()
+  if (!rows.length) {
+    return <div className="empty-state"><p>No {mode} results yet.</p></div>
+  }
+  return (
+    <div className="table-wrap">
+      <table className="f1-table">
+        <thead>
+          <tr>
+            <th>Driver</th>
+            <th>Round</th>
+            <th>Race</th>
+            <th>Type</th>
+            {mode === 'race' && <th className="text-right">Grid</th>}
+            <th className="text-right">{mode === 'practice' ? 'Pos' : 'Finish'}</th>
+            {mode === 'race' && <th>Status</th>}
+            {mode === 'race' && <th className="text-right">Points</th>}
+            {mode === 'practice' && <th className="text-right">Laps</th>}
+            <th className="text-right">Best Lap</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sortTeamRows(rows).map((r, i) => (
+            <tr
+              key={i}
+              onClick={() => r.session?.session_key && navigate(`/sessions/${r.session.session_key}`)}
+              style={{ cursor: 'pointer' }}
+            >
+              <td>
+                {r.driver && (
+                  <Link
+                    to={`/drivers/${r.driver.driver_id}`}
+                    style={{ fontFamily: 'Barlow Condensed', fontWeight: 700 }}
+                    onClick={e => e.stopPropagation()}
+                  >
+                    {r.driver.abbreviation}
+                  </Link>
+                )}
+              </td>
+              <td className="text-muted mono">{r.session?.round || '--'}</td>
+              <td>{r.session?.gp_name || r.session?.race_name || r.session?.circuit?.name || r.session?.session_name || '--'}</td>
+              <td className="text-secondary" style={{ fontSize: 12 }}>{r.session?.session_type}</td>
+              {mode === 'race' && (
+                <td className="text-right mono">{r.status === 'DNS' ? 'DNS' : (r.grid_position || '--')}</td>
+              )}
+              <td className="text-right">
+                {r.position
+                  ? <PosBadge pos={r.position} />
+                  : (['DNF', 'DNS', 'DSQ'].includes(r.status)
+                      ? <span className="pos-badge pos-dnf">{r.status}</span>
+                      : <span className="text-muted font-cond">--</span>)}
+              </td>
+              {mode === 'race' && (
+                <td style={{ color: getStatusColor(r.status), fontSize: 12 }}>{r.status || '--'}</td>
+              )}
+              {mode === 'race' && <td className="text-right font-cond font-bold">{r.points != null ? r.points : '--'}</td>}
+              {mode === 'practice' && <td className="text-right mono">{r.laps_completed || '--'}</td>}
+              <td className="text-right mono" style={{ fontSize: 12 }}>
+                {r.status === 'DNS' ? 'N/A' : (r.best_lap_time_str || '--')}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+const TEAM_TABS = [
+  ['race', 'Race Results'],
+  ['qualifying', 'Qualifying Results'],
+  ['practice', 'Practice Results'],
+  ['cars', 'Car Parts'],
+]
 
 export default function TeamDetail() {
   const { id } = useParams()
   const [team, setTeam] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState('results')
+  const [tab, setTab] = useState('race')
 
   useEffect(() => {
     api.team(id).then(d => {
@@ -27,6 +112,11 @@ export default function TeamDetail() {
   const wins = raceResults.filter(r => r.position === 1).length
   const podiums = raceResults.filter(r => r.position && r.position <= 3).length
   const totalPoints = raceResults.reduce((sum, r) => sum + (r.points || 0), 0)
+
+  // Results split by tab
+  const raceTabRows = team.results?.filter(r => ['Race', 'Sprint'].includes(r.session?.session_type)) || []
+  const qualTabRows = team.results?.filter(r => ['Qualifying', 'Sprint Qualifying'].includes(r.session?.session_type)) || []
+  const practiceTabRows = team.results?.filter(r => r.session?.session_type === 'Practice') || []
 
   return (
     <div>
@@ -66,7 +156,7 @@ export default function TeamDetail() {
       <div className="container">
         {/* Stats */}
         <div style={{ marginBottom: 24 }}>
-          <div className="section-label">2025 Season Stats</div>
+          <div className="section-label">{new Date().getFullYear()} Season Stats</div>
           <div className="stat-grid">
             <div className="stat-item"><span className="value">{totalPoints}</span><span className="label">Total Points</span></div>
             <div className="stat-item"><span className="value">{wins}</span><span className="label">Wins</span></div>
@@ -77,55 +167,16 @@ export default function TeamDetail() {
         </div>
 
         <div className="tab-bar">
-          {['results', 'cars'].map(t => (
+          {TEAM_TABS.map(([t, label]) => (
             <button key={t} className={`tab-btn${tab === t ? ' active' : ''}`} onClick={() => setTab(t)}>
-              {t === 'results' ? 'Results' : 'Car Parts'}
+              {label}
             </button>
           ))}
         </div>
 
-        {tab === 'results' && (
-          <div className="table-wrap">
-            <table className="f1-table">
-              <thead>
-                <tr>
-                  <th>Round</th>
-                  <th>Race</th>
-                  <th>Driver</th>
-                  <th>Type</th>
-                  <th className="text-right">Grid</th>
-                  <th className="text-right">Finish</th>
-                  <th>Status</th>
-                  <th className="text-right">Points</th>
-                </tr>
-              </thead>
-              <tbody>
-                {team.results?.sort((a, b) => (b.session?.round || 0) - (a.session?.round || 0)).map((r, i) => (
-                  <tr key={i}>
-                    <td className="text-muted mono">{r.session?.round || '--'}</td>
-                    <td>
-                      <Link to={`/sessions/${r.session?.session_key}`} style={{ color: 'var(--text-primary)' }}>
-                        {r.session?.circuit?.name || r.session?.session_name || '--'}
-                      </Link>
-                    </td>
-                    <td>
-                      {r.driver && (
-                        <Link to={`/drivers/${r.driver.driver_id}`} style={{ fontFamily: 'Barlow Condensed', fontWeight: 700 }}>
-                          {r.driver.abbreviation}
-                        </Link>
-                      )}
-                    </td>
-                    <td className="text-secondary" style={{ fontSize: 12 }}>{r.session?.session_type}</td>
-                    <td className="text-right mono">{r.grid_position || '--'}</td>
-                    <td className="text-right"><PosBadge pos={r.position} /></td>
-                    <td style={{ color: getStatusColor(r.status), fontSize: 12 }}>{r.status || '--'}</td>
-                    <td className="text-right font-cond font-bold">{r.points || '--'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {tab === 'race' && <TeamResultsTable rows={raceTabRows} mode="race" />}
+        {tab === 'qualifying' && <TeamResultsTable rows={qualTabRows} mode="qualifying" />}
+        {tab === 'practice' && <TeamResultsTable rows={practiceTabRows} mode="practice" />}
 
         {tab === 'cars' && (
           <div>
