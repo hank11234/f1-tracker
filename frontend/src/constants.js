@@ -41,14 +41,15 @@ export const SESSION_TYPE_ORDER = {
   'Race': 7,
 }
 
+// 2026 power-unit spec: the MGU-H was removed; allocations are
+// ICE/Turbo/Exhaust = 4 and MGU-K/Energy Store/Control Electronics = 3.
 export const PU_COMPONENTS = [
   { key: 'ICE', label: 'ICE', full: 'Internal Combustion Engine', limit: 4 },
   { key: 'TC', label: 'TC', full: 'Turbocharger', limit: 4 },
-  { key: 'MGU-H', label: 'MGU-H', full: 'Motor Generator Unit - Heat', limit: 4 },
-  { key: 'MGU-K', label: 'MGU-K', full: 'Motor Generator Unit - Kinetic', limit: 4 },
-  { key: 'ES', label: 'ES', full: 'Energy Store', limit: 4 },
-  { key: 'CE', label: 'CE', full: 'Control Electronics', limit: 4 },
-  { key: 'Exhaust', label: 'EXH', full: 'Exhaust', limit: 8 },
+  { key: 'MGU-K', label: 'MGU-K', full: 'Motor Generator Unit - Kinetic', limit: 3 },
+  { key: 'ES', label: 'ES', full: 'Energy Store', limit: 3 },
+  { key: 'CE', label: 'CE', full: 'Control Electronics', limit: 3 },
+  { key: 'Exhaust', label: 'EXH', full: 'Exhaust', limit: 4 },
 ]
 
 export const API_BASE = '/api'

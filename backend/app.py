@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 import models
 from database import Base, engine, SessionLocal, get_db
-from fetchers import openf1
+from fetchers import openf1, car_parts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,6 +90,9 @@ NATIONALITY_TO_COUNTRY = {
 # shown as canceled across the site.
 CANCELED_CIRCUITS = {"jeddah", "sakhir"}
 
+# 2026 power-unit allocation limits (MGU-H removed for 2026).
+PU_LIMITS = {"ICE": 4, "TC": 4, "MGU-K": 3, "ES": 3, "CE": 3, "Exhaust": 4}
+
 app = FastAPI(title="F1 Tracker API", version="1.0.0")
 
 app.add_middleware(
@@ -131,9 +134,21 @@ def _start_scheduler():
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     scheduler = AsyncIOScheduler()
     scheduler.add_job(sync_all, "interval", minutes=15, id="sync_all")
+    # PU component usage changes at most once per weekend; check a few times a day.
+    scheduler.add_job(sync_car_parts_job, "interval", hours=6, id="sync_car_parts")
     scheduler.start()
     app.state.scheduler = scheduler
-    logger.info("Scheduler started (15-min interval)")
+    logger.info("Scheduler started (sync 15m, car parts 6h)")
+
+
+async def sync_car_parts_job():
+    db = SessionLocal()
+    try:
+        await sync_car_parts(db)
+    except Exception as e:
+        logger.error(f"Car parts job error: {e}", exc_info=True)
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +385,94 @@ async def sync_standings(db: Session):
     logger.info("Syncing standings...")
     _compute_standings_from_results(db)
     logger.info("Standings sync complete")
+
+
+# f1technical.net's 2026 PU component analysis (after round 3) is the latest
+# detailed public breakdown, used as a baseline when no live source is set:
+# one of each element, the listed drivers on a 2nd Control Electronics, and
+# Hadjar the outlier on a 2nd ICE/Turbo/Exhaust/MGU-K.
+_CARPARTS_BASELINE = {"ICE": 1, "TC": 1, "Exhaust": 1, "MGU-K": 1, "ES": 1, "CE": 1}
+_CARPARTS_CE2 = {"RUS", "ANT", "NOR", "VER", "HAD", "SAI", "STR", "ALO", "OCO", "BOR", "BOT"}
+_CARPARTS_OVERRIDES = {"HAD": {"ICE": 2, "TC": 2, "Exhaust": 2, "MGU-K": 2, "CE": 2}}
+
+
+def _seed_car_parts_baseline(db: Session):
+    """Populate the f1technical baseline once, if no component data exists yet."""
+    if db.query(models.CarPart).filter_by(year=CURRENT_YEAR).count() > 0:
+        return
+    latest_round = (
+        db.query(func.max(models.Session.round_number))
+        .filter_by(year=CURRENT_YEAR, session_type="Race", status="completed")
+        .scalar()
+    ) or 3
+    n = 0
+    for d in db.query(models.Driver).all():
+        ab = (d.abbreviation or "").upper()
+        counts = dict(_CARPARTS_BASELINE)
+        if ab in _CARPARTS_CE2:
+            counts["CE"] = 2
+        counts.update(_CARPARTS_OVERRIDES.get(ab, {}))
+        for component, count in counts.items():
+            db.add(models.CarPart(
+                driver_id=d.id, year=CURRENT_YEAR, round_number=latest_round,
+                component=component, pool_count=count,
+                penalty_applied=count > PU_LIMITS.get(component, 99),
+                notes="f1technical r3",
+            ))
+            n += 1
+    db.commit()
+    logger.info(f"Seeded {n} baseline car-part records (round {latest_round})")
+
+
+async def sync_car_parts(db: Session):
+    """Best-effort: scrape PU component usage and upsert CarPart rows.
+
+    When no source is configured / reachable, falls back to the f1technical
+    baseline seed (once) and the manual POST /api/cars/update endpoint.
+    """
+    records = await car_parts.fetch_component_usage()
+    if not records:
+        _seed_car_parts_baseline(db)
+        return
+
+    drivers = db.query(models.Driver).all()
+    by_abbrev = {d.abbreviation.upper(): d for d in drivers if d.abbreviation}
+    by_last = {d.last_name.upper(): d for d in drivers if d.last_name}
+
+    # Attribute the snapshot to the latest completed round.
+    latest_round = (
+        db.query(func.max(models.Session.round_number))
+        .filter_by(year=CURRENT_YEAR, session_type="Race", status="completed")
+        .scalar()
+    ) or 0
+
+    stored = 0
+    for rec in records:
+        label = (rec.get("driver") or "").upper().strip()
+        driver = by_abbrev.get(label) or by_last.get(label) or by_last.get(label.split()[-1] if label else "")
+        if not driver:
+            continue
+        component = rec["component"]
+        count = int(rec["count"])
+        penalty = count > PU_LIMITS.get(component, 99)
+
+        existing = db.query(models.CarPart).filter_by(
+            driver_id=driver.id, year=CURRENT_YEAR,
+            round_number=latest_round, component=component,
+        ).first()
+        if existing:
+            existing.pool_count = count
+            existing.penalty_applied = penalty
+        else:
+            db.add(models.CarPart(
+                driver_id=driver.id, year=CURRENT_YEAR, round_number=latest_round,
+                component=component, pool_count=count, penalty_applied=penalty,
+                notes="scraped",
+            ))
+        stored += 1
+
+    db.commit()
+    logger.info(f"Car parts sync: stored {stored} component records (round {latest_round})")
 
 
 async def sync_openf1_sessions(db: Session, meeting_round_map: dict,
@@ -911,6 +1014,7 @@ async def sync_all():
 async def initial_sync():
     await asyncio.sleep(1)
     await sync_all()
+    await sync_car_parts_job()
 
 
 # ---------------------------------------------------------------------------
@@ -1456,6 +1560,13 @@ def get_cars(db: Session = Depends(get_db)):
             "has_penalty": any(p.penalty_applied for p in parts),
         })
     return result
+
+
+@app.post("/api/cars/scrape")
+async def trigger_car_parts_scrape(background_tasks: BackgroundTasks):
+    """Manually trigger the best-effort PU component-usage scrape."""
+    background_tasks.add_task(sync_car_parts_job)
+    return {"message": "Car parts scrape triggered"}
 
 
 @app.post("/api/cars/update")

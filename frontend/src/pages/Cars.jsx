@@ -143,8 +143,9 @@ export default function Cars() {
           <p style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.7 }}>
             Power unit component usage is tracked from FIA technical documents published before each race weekend.
             Use the <code style={{ background: 'var(--bg-primary)', padding: '1px 4px', borderRadius: 2 }}>POST /api/cars/update</code> endpoint
-            to manually record component changes as they are published. Component limits per season:
-            ICE/TC/MGU-H/MGU-K/ES/CE = 4 each, Exhaust = 8.
+            to manually record component changes as they are published, or let the scheduled
+            scraper fill them in. 2026 limits per season: ICE / Turbo / Exhaust = 4, MGU-K /
+            Energy Store / Control Electronics = 3 (the MGU-H was removed for 2026).
           </p>
         </div>
       </div>
