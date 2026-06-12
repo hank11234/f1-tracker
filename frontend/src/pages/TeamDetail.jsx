@@ -180,12 +180,12 @@ export default function TeamDetail() {
 
         {tab === 'cars' && (
           <div>
+            {/* Per-driver usage boxes */}
             {team.drivers.map(driver => {
-              const driverParts = team.car_parts?.filter(p => p.driver?.driver_id === driver.driver_id) || []
               const componentMap = {}
               for (const comp of PU_COMPONENTS) {
-                const entries = driverParts.filter(p => p.component === comp.key)
-                componentMap[comp.key] = entries.length > 0 ? Math.max(...entries.map(e => e.count)) : 0
+                const entries = team.car_parts?.filter(p => p.driver?.driver_id === driver.driver_id && p.component === comp.key) || []
+                componentMap[comp.key] = entries.length ? Math.max(...entries.map(e => e.count)) : 1
               }
               return (
                 <div key={driver.driver_id} style={{ marginBottom: 24 }}>
@@ -197,7 +197,7 @@ export default function TeamDetail() {
                   </div>
                   <div className="pu-grid">
                     {PU_COMPONENTS.map(comp => {
-                      const count = componentMap[comp.key] || 0
+                      const count = componentMap[comp.key]
                       const cls = count > comp.limit ? 'over-limit' : count === comp.limit ? 'at-limit' : ''
                       return (
                         <div key={comp.key} className={`pu-cell ${cls}`} title={comp.full}>
@@ -211,8 +211,47 @@ export default function TeamDetail() {
                 </div>
               )
             })}
-            {!team.car_parts?.length && (
-              <p className="text-muted" style={{ fontSize: 13 }}>No component data recorded.</p>
+
+            {/* Change log */}
+            {team.car_parts?.length > 0 ? (
+              <div className="table-wrap" style={{ marginTop: 8 }}>
+                <table className="f1-table">
+                  <thead>
+                    <tr>
+                      <th>Driver</th>
+                      <th>Reported in</th>
+                      <th>Component</th>
+                      <th className="text-right">Unit</th>
+                      <th>Penalty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {team.car_parts.slice()
+                      .sort((a, b) =>
+                        (a.driver?.number || 0) - (b.driver?.number || 0) ||
+                        (a.round - b.round) || a.component.localeCompare(b.component))
+                      .map((p, i) => (
+                        <tr key={i}>
+                          <td>
+                            {p.driver && (
+                              <Link to={`/drivers/${p.driver.driver_id}`} style={{ fontFamily: 'Barlow Condensed', fontWeight: 700 }}>
+                                {p.driver.abbreviation}
+                              </Link>
+                            )}
+                          </td>
+                          <td className="text-secondary">{p.reported_in || '--'}</td>
+                          <td className="font-bold">{p.component}</td>
+                          <td className="text-right mono">{p.count}</td>
+                          <td style={{ color: p.penalty ? 'var(--f1-red)' : 'var(--green)' }}>
+                            {p.penalty ? 'Yes' : 'No'}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-muted" style={{ fontSize: 13 }}>No part changes yet.</p>
             )}
           </div>
         )}

@@ -121,10 +121,12 @@ export default function DriverDetail() {
   const points = raceResults.reduce((sum, r) => sum + (r.points || 0), 0)
   const currentStanding = driver.standings_history?.at(-1)
 
+  // Only changes are stored, so a component with no record is still on its
+  // original (first) unit -> count 1.
   const componentMap = {}
   for (const comp of PU_COMPONENTS) {
     const entries = driver.car_parts?.filter(p => p.component === comp.key) || []
-    componentMap[comp.key] = entries.length > 0 ? Math.max(...entries.map(e => e.count)) : 0
+    componentMap[comp.key] = entries.length ? Math.max(...entries.map(e => e.count)) : 1
   }
 
   return (
@@ -194,20 +196,22 @@ export default function DriverDetail() {
         {tab === 'qualifying' && <ResultsTable rows={qualTabRows} mode="qualifying" />}
         {tab === 'practice' && <ResultsTable rows={practiceTabRows} mode="practice" />}
 
-        {/* Car parts tab */}
+        {/* Car parts tab — log of part changes (extra elements beyond the first) */}
         {tab === 'cars' && (
           <div>
             <div style={{ marginBottom: 16, color: 'var(--text-secondary)', fontSize: 13 }}>
-              Power unit component usage for {new Date().getFullYear()}. Exceeding the allocation limit triggers a grid penalty.
+              Power unit element usage for {new Date().getFullYear()} — boxes show units used per
+              element; the table logs each change beyond the original. Exceeding the limit triggers
+              a grid penalty.
             </div>
             <div className="pu-grid" style={{ marginBottom: 24 }}>
               {PU_COMPONENTS.map(comp => {
-                const count = componentMap[comp.key] || 0
+                const count = componentMap[comp.key]
                 const cls = count > comp.limit ? 'over-limit' : count === comp.limit ? 'at-limit' : ''
                 return (
                   <div key={comp.key} className={`pu-cell ${cls}`} title={comp.full}>
                     <span className="key">{comp.label}</span>
-                    <span className="count">{count || 0}</span>
+                    <span className="count">{count}</span>
                     <span className="key">/ {comp.limit}</span>
                   </div>
                 )
@@ -218,30 +222,30 @@ export default function DriverDetail() {
                 <table className="f1-table">
                   <thead>
                     <tr>
-                      <th>Round</th>
+                      <th>Reported in</th>
                       <th>Component</th>
-                      <th>Pool Count</th>
+                      <th className="text-right">Unit</th>
                       <th>Penalty</th>
-                      <th>Notes</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {driver.car_parts.sort((a, b) => b.round - a.round).map((p, i) => (
-                      <tr key={i}>
-                        <td className="text-muted mono">{p.round}</td>
-                        <td className="font-bold">{p.component}</td>
-                        <td>{p.count}</td>
-                        <td style={{ color: p.penalty ? 'var(--f1-red)' : 'var(--green)' }}>
-                          {p.penalty ? 'Yes' : 'No'}
-                        </td>
-                        <td className="text-secondary" style={{ fontSize: 12 }}>{p.notes || '--'}</td>
-                      </tr>
-                    ))}
+                    {driver.car_parts.slice()
+                      .sort((a, b) => (a.round - b.round) || a.component.localeCompare(b.component))
+                      .map((p, i) => (
+                        <tr key={i}>
+                          <td className="text-secondary">{p.reported_in || '--'}</td>
+                          <td className="font-bold">{p.component}</td>
+                          <td className="text-right mono">{p.count}</td>
+                          <td style={{ color: p.penalty ? 'var(--f1-red)' : 'var(--green)' }}>
+                            {p.penalty ? 'Yes' : 'No'}
+                          </td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
             ) : (
-              <p className="text-muted" style={{ fontSize: 13 }}>No component data recorded. Use the API endpoint to add part change records.</p>
+              <p className="text-muted" style={{ fontSize: 13 }}>No part changes yet.</p>
             )}
           </div>
         )}

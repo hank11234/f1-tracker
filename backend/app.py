@@ -388,40 +388,45 @@ async def sync_standings(db: Session):
 
 
 # f1technical.net's 2026 PU component analysis (after round 3) is the latest
-# detailed public breakdown, used as a baseline when no live source is set:
-# one of each element, the listed drivers on a 2nd Control Electronics, and
-# Hadjar the outlier on a 2nd ICE/Turbo/Exhaust/MGU-K.
-_CARPARTS_BASELINE = {"ICE": 1, "TC": 1, "Exhaust": 1, "MGU-K": 1, "ES": 1, "CE": 1}
+# detailed public breakdown. We record only CHANGES — additional elements taken
+# beyond the original first unit — each tagged with the round it happened (the
+# exact change rounds aren't published, so we use the round it was documented).
+# As of round 3: the listed drivers are on a 2nd Control Electronics, and Hadjar
+# is the outlier on a 2nd ICE/Turbo/Exhaust/MGU-K.
+_CARPARTS_DOCUMENTED_ROUND = 3
 _CARPARTS_CE2 = {"RUS", "ANT", "NOR", "VER", "HAD", "SAI", "STR", "ALO", "OCO", "BOR", "BOT"}
-_CARPARTS_OVERRIDES = {"HAD": {"ICE": 2, "TC": 2, "Exhaust": 2, "MGU-K": 2, "CE": 2}}
+_CARPARTS_EXTRA = {"HAD": {"ICE", "TC", "Exhaust", "MGU-K"}}  # extra elements beyond CE
+
+
+def _driver_part_changes(abbrev: str) -> dict:
+    """{component: unit_number} for each element taken beyond the original.
+    Unit number 2 = the driver's 2nd unit (their first change)."""
+    ab = (abbrev or "").upper()
+    changed = set()
+    if ab in _CARPARTS_CE2:
+        changed.add("CE")
+    changed |= _CARPARTS_EXTRA.get(ab, set())
+    return {c: 2 for c in changed}  # all current changes are a 2nd unit
 
 
 def _seed_car_parts_baseline(db: Session):
-    """Populate the f1technical baseline once, if no component data exists yet."""
+    """Seed the documented part changes once, if no component data exists yet.
+    Only changes are stored (the original first unit is never recorded)."""
     if db.query(models.CarPart).filter_by(year=CURRENT_YEAR).count() > 0:
         return
-    latest_round = (
-        db.query(func.max(models.Session.round_number))
-        .filter_by(year=CURRENT_YEAR, session_type="Race", status="completed")
-        .scalar()
-    ) or 3
     n = 0
     for d in db.query(models.Driver).all():
-        ab = (d.abbreviation or "").upper()
-        counts = dict(_CARPARTS_BASELINE)
-        if ab in _CARPARTS_CE2:
-            counts["CE"] = 2
-        counts.update(_CARPARTS_OVERRIDES.get(ab, {}))
-        for component, count in counts.items():
+        for component, unit in _driver_part_changes(d.abbreviation).items():
             db.add(models.CarPart(
-                driver_id=d.id, year=CURRENT_YEAR, round_number=latest_round,
-                component=component, pool_count=count,
-                penalty_applied=count > PU_LIMITS.get(component, 99),
-                notes="f1technical r3",
+                driver_id=d.id, year=CURRENT_YEAR,
+                round_number=_CARPARTS_DOCUMENTED_ROUND,
+                component=component, pool_count=unit,
+                penalty_applied=unit > PU_LIMITS.get(component, 99),
+                notes=None,
             ))
             n += 1
     db.commit()
-    logger.info(f"Seeded {n} baseline car-part records (round {latest_round})")
+    logger.info(f"Seeded {n} car-part change records")
 
 
 async def sync_car_parts(db: Session):
@@ -1045,6 +1050,16 @@ def serialize_driver(d: models.Driver) -> dict:
     }
 
 
+def _round_country_map(db: Session) -> dict:
+    """{round_number: race country} for the current year's races, for showing
+    where a part change was reported (e.g. round 3 -> 'China')."""
+    out = {}
+    for s in db.query(models.Session).filter_by(year=CURRENT_YEAR, session_type="Race").all():
+        if s.circuit and s.circuit.country:
+            out[s.round_number] = s.circuit.country
+    return out
+
+
 def serialize_team(t: models.Team) -> dict:
     demonym = t.nationality or TEAM_NATIONALITY.get(t.constructor_id, "")
     return {
@@ -1259,9 +1274,11 @@ def get_driver(driver_id: str, db: Session = Depends(get_db)):
     )
 
     # Car parts
+    round_country = _round_country_map(db)
     parts = db.query(models.CarPart).filter_by(driver_id=driver.id, year=CURRENT_YEAR).all()
     parts_data = [
         {"component": p.component, "count": p.pool_count, "round": p.round_number,
+         "reported_in": round_country.get(p.round_number, ""),
          "penalty": p.penalty_applied, "notes": p.notes}
         for p in parts
     ]
@@ -1322,6 +1339,7 @@ def get_team(constructor_id: str, db: Session = Depends(get_db)):
     )
 
     # Car parts across team's drivers
+    round_country = _round_country_map(db)
     parts = []
     for driver in drivers:
         dparts = db.query(models.CarPart).filter_by(driver_id=driver.id, year=CURRENT_YEAR).all()
@@ -1331,6 +1349,7 @@ def get_team(constructor_id: str, db: Session = Depends(get_db)):
                 "component": p.component,
                 "count": p.pool_count,
                 "round": p.round_number,
+                "reported_in": round_country.get(p.round_number, ""),
                 "penalty": p.penalty_applied,
                 "notes": p.notes,
             })

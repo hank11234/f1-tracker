@@ -108,16 +108,19 @@ export default function Cars() {
                       </Link>
                     </td>
                     {PU_COMPONENTS.map(comp => {
-                      const count = car.components?.[comp.key] || 0
+                      // Only changes are stored, so a missing component means the
+                      // driver is still on their original (first) unit.
+                      const count = car.components?.[comp.key] || 1
                       const isOver = count > comp.limit
                       const isAt = count === comp.limit
+                      const changed = count > 1
                       return (
                         <td key={comp.key} className="text-center">
                           <span style={{
                             fontFamily: 'Barlow Condensed',
                             fontWeight: 800,
                             fontSize: 18,
-                            color: isOver ? 'var(--f1-red)' : isAt ? '#ff9800' : count > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
+                            color: isOver ? 'var(--f1-red)' : isAt ? '#ff9800' : changed ? 'var(--text-primary)' : 'var(--text-muted)',
                           }}>
                             {count}
                           </span>
